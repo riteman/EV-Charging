@@ -182,7 +182,38 @@ sensor:
     method: trapezoidal
       
 template:
-    - sensor:
+    - sensor:    
+      - name: "EV Solar Power to Car"
+        unique_id: ev_solar_power_to_car
+        unit_of_measurement: "kW"
+        state: >
+          {% set export = [states('sensor.grid_export_power_average_2m_safe') | float(0), 0] | max %}
+          {% set amp = states('sensor.ev_target_ampere_stable') | float(0) %}
+          {% set charger_power = 11 * (amp / 16) %}
+          {{ [export, charger_power] | min | round(2) }}
+          
+          
+      - name: "EV Grid Power to Car"
+        unique_id: ev_grid_power_to_car
+        unit_of_measurement: "kW"
+        state: >
+          {% set total = 11 * (states('sensor.ev_target_ampere_stable') | float(0) / 16) %}
+          {% set solar = states('sensor.ev_solar_power_to_car') | float(0) %}
+          {{ [total - solar, 0] | max | round(2) }}    
+          
+      - name: "EV Solar Fraction"
+        unique_id: ev_solar_fraction
+        unit_of_measurement: "%"
+        state: >
+          {% set total = 11 * (states('sensor.ev_target_ampere_stable') | float(0) / 16) %}
+          {% set solar = states('sensor.ev_solar_power_to_car') | float(0) %}
+          {% if total > 0 %}
+            {{ (100 * solar / total) | round(0) }}
+          {% else %}
+            0
+          {% endif %}    
+        
+    
       - name: "EV Remaining Energy kWh"
         unique_id: ev_remaining_energy_kwh
         unit_of_measurement: "kWh"
