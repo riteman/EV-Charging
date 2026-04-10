@@ -1,0 +1,91 @@
+{
+  "title": "Fusion Solar",
+  "config": {
+    "error": {
+      "invalid_type": "Invalid type, only kiosk or openapi are allowed.",
+      "invalid_credentials": "Could not authenticate with the provided credentials."
+    },
+    "step": {
+      "choose_type": {
+        "description": "FusionSolar can be connected in two ways:\n* **Kiosk**: This is the most easy way as you (probably) don't need any interaction with Huawei Fusion Solar, the drawback is the the realtime information is per 30 minutes.\n* **OpenAPI**: You will need an OpenAPI account from Huawei, this will give you better realtime information. [More information]({openapi_help_url}).",
+        "data": {
+          "type": "Choose the way you want to connect to Fusion Solar"
+        }
+      },
+      "kiosk": {
+        "description": "1. Sign in on the [Huawei FusionSolar portal]({kiosk_portal_url}).\n2. Select your plant if needed.\n3. At the top there is a button: \"Kiosk\", click it.\n4. An overlay will open, and you need to enable the kiosk view by enabling the toggle.",
+        "data": {
+          "name": "Name",
+          "url": "Kiosk URL",
+          "add_another": "Add another kiosk URL"
+        }
+      },
+      "openapi": {
+        "description": "Enter the OpenAPI credentials your received from Huawei FusionSolar below.",
+        "data": {
+          "host": "Host",
+          "username": "Username",
+          "password": "Password"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "battery_status": {
+        "state": {
+          "0": "offline",
+          "1": "standby",
+          "2": "running",
+          "3": "faulty",
+          "4": "hibernation"
+        }
+      },
+      "ch_discharge_model": {
+        "state": {
+          "0": "none",
+          "1": "forced charge/discharge",
+          "2": "time-of-use price",
+          "3": "fixed charge/discharge",
+          "4": "automatic charge/discharge"
+        }
+      },
+      "meter_status": {
+        "state": {
+          "0": "offline",
+          "1": "normal"
+        }
+      },
+      "inverter_state": {
+        "state": {
+          "0": "Standby: initializing",
+          "1": "Standby: insulation resistance detection",
+          "2": "Standby: sunlight detection",
+          "3": "Standby: power grid detection",
+          "256": "Start",
+          "512": "Grid connection",
+          "513": "Grid connection: limited power",
+          "514": "Grid connection: self-derating",
+          "768": "Shutdown: unexpected shutdown",
+          "769": "Shutdown: commanded shutdown",
+          "770": "Shutdown: OVGR",
+          "771": "Shutdown: communication disconnection",
+          "772": "Shutdown: limited power",
+          "773": "Shutdown: manual startup is required",
+          "774": "Shutdown: DC switch disconnected",
+          "1025": "Grid scheduling: cosψ-P curve",
+          "1026": "Grid scheduling: Q-U curve",
+          "1280": "Spot-check ready",
+          "1281": "Spot-checking",
+          "1536": "Inspecting",
+          "1792": "AFCI self-check",
+          "2048": "I-V scanning",
+          "2304": "DC input detection",
+          "40960": "Standby: no sunlight",
+          "45056": "Communication disconnection (written by the SmartLogger)",
+          "49152": "Loading (written by the SmartLogger)"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,128 @@
+{
+  "title": "Nordpool Predict FI",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Nordpool Predict FI",
+        "description": "Näytä Nordpool Predict FI -ennusteet Home Assistantissa.",
+        "data": {
+          "base_url": "Osoite",
+          "update_interval": "Päivitysväli (minuuttia)"
+        }
+      },
+      "reconfigure": {
+        "title": "Nordpool Predict FI",
+        "description": "Tarkista yhteysasetukset ja päivitä asetukset.",
+        "data": {
+          "base_url": "Osoite",
+          "update_interval": "Päivitysväli (minuuttia)"
+        }
+      }
+    },
+    "error": {
+      "invalid_url": "Osoitteen tulee olla kelvollinen URL"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Nordpool Predict FI -asetukset",
+        "description": "Muuta päivitysväliä tai osoitetta.",
+        "data": {
+          "base_url": "Osoite",
+          "update_interval": "Päivitysväli (minuuttia)"
+        }
+      }
+    },
+    "error": {
+      "invalid_url": "Osoitteen tulee olla kelvollinen URL"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "price": {
+        "name": "Hinta"
+      },
+      "windpower": {
+        "name": "Tuulivoima"
+      },
+      "cheapest_3h": {
+        "name": "Edullisin 3h hintajakso"
+      },
+      "cheapest_3h_active": {
+        "name": "Edullisin 3h jakso käynnissä"
+      },
+      "cheapest_6h": {
+        "name": "Edullisin 6h hintajakso"
+      },
+      "cheapest_6h_active": {
+        "name": "Edullisin 6h jakso käynnissä"
+      },
+      "cheapest_12h": {
+        "name": "Edullisin 12h hintajakso"
+      },
+      "cheapest_12h_active": {
+        "name": "Edullisin 12h jakso käynnissä"
+      },
+      "cheapest_custom": {
+        "name": "Edullisin oma hintajakso"
+      },
+      "cheapest_custom_active": {
+        "name": "Oma hintajakso käynnissä"
+      },
+      "price_now": {
+        "name": "Hinta nyt"
+      },
+      "price_daily_average": {
+        "name": "Päivän keskihinta"
+      },
+      "price_next_1h": {
+        "name": "Keskiarvohinta 1h"
+      },
+      "price_next_3h": {
+        "name": "Keskiarvohinta 3h"
+      },
+      "price_next_6h": {
+        "name": "Keskiarvohinta 6h"
+      },
+      "price_next_12h": {
+        "name": "Keskiarvohinta 12h"
+      },
+      "windpower_now": {
+        "name": "Tuulivoima nyt"
+      },
+      "narration_fi": {
+        "name": "Narration (FI)"
+      },
+      "narration_en": {
+        "name": "Narration (EN)"
+      }
+    },
+    "number": {
+      "extra_fees": {
+        "name": "Lisämaksu"
+      },
+      "custom_window_hours": {
+        "name": "Oman jakson tunnit"
+      },
+      "custom_window_start_hour": {
+        "name": "Oman jakson aloitustunti"
+      },
+      "custom_window_end_hour": {
+        "name": "Oman jakson viimeinen tunti"
+      },
+      "custom_window_lookahead_hours": {
+        "name": "Oman jakson ennakkotunnit"
+      },
+      "cheapest_window_lookahead_hours": {
+        "name": "Halvimman jakson ennakkotunnit"
+      },
+      "cheapest_window_start_hour": {
+        "name": "Halvimman jakson aloitustunti"
+      },
+      "cheapest_window_end_hour": {
+        "name": "Halvimman jakson viimeinen tunti"
+      }
+    }
+  }
+}

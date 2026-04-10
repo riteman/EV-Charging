@@ -1,0 +1,25 @@
+ev_charge_start:
+  alias: EV Charge Start
+  mode: single
+  sequence:
+    # Start opladning via Easee/Monta
+    - service: switch.turn_on
+      target:
+        entity_id: switch.eh45khwp_charger_enabled
+
+ev_charge_stop:
+  alias: EV Charge Stop
+  mode: single
+  sequence:
+    # Stop opladning
+    - service: switch.turn_off
+      target:
+        entity_id: switch.eh45khwp_charger_enabled
+        
+ev_set_manual_ampere:
+  alias: EV - Set manual ampere
+  sequence:
+    - action: rest_command.set_ioniq_ampere
+      data:
+        ampere: "{{ states('input_number.ev_manual_ampere') | int(10) }}"
+  mode: single

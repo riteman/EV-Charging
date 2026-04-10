@@ -1,0 +1,817 @@
+from __future__ import annotations
+
+#region sensor
+
+from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from .const import (
+    ATTR_CUSTOM_WINDOW_END_HOUR,
+    ATTR_CUSTOM_WINDOW_HOURS,
+    ATTR_CUSTOM_WINDOW_LOOKAHEAD_HOURS,
+    ATTR_CUSTOM_WINDOW_LOOKAHEAD_LIMIT,
+    ATTR_CUSTOM_WINDOW_START_HOUR,
+    ATTR_DAILY_AVERAGE_SPAN_END,
+    ATTR_DAILY_AVERAGE_SPAN_START,
+    ATTR_FORECAST,
+    ATTR_FORECAST_START,
+    ATTR_DAILY_AVERAGES,
+    ATTR_EXTRA_FEES,
+    ATTR_LANGUAGE,
+    ATTR_NARRATION_CONTENT,
+    ATTR_NARRATION_SUMMARY,
+    ATTR_RAW_SOURCE,
+    ATTR_SOURCE_URL,
+    ATTR_TIMESTAMP,
+    ATTR_WIND_FORECAST,
+    ATTR_WINDOW_DURATION,
+    ATTR_WINDOW_LOOKAHEAD_HOURS,
+    ATTR_WINDOW_LOOKAHEAD_LIMIT,
+    ATTR_CHEAPEST_WINDOW_START_HOUR,
+    ATTR_CHEAPEST_WINDOW_END_HOUR,
+    ATTR_WINDOW_END,
+    ATTR_WINDOW_POINTS,
+    ATTR_WINDOW_START,
+    CHEAPEST_WINDOW_HOURS,
+    CUSTOM_WINDOW_KEY,
+    DATA_COORDINATOR,
+    DOMAIN,
+    NARRATION_LANGUAGES,
+    NARRATION_LANGUAGE_NAMES,
+    NEXT_HOURS,
+)
+from .coordinator import (
+    DailyAverage,
+    NordpoolPredictCoordinator,
+    PriceWindow,
+    SeriesPoint,
+)
+
+
+#region _setup
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    coordinator: NordpoolPredictCoordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
+
+    entities: list[SensorEntity] = [
+        NordpoolPriceSensor(coordinator, entry),
+        NordpoolPriceNowSensor(coordinator, entry),
+        NordpoolPriceDailyAverageSensor(coordinator, entry),
+    ]
+    entities.extend(
+        NordpoolPriceNextHoursSensor(coordinator, entry, hours) for hours in NEXT_HOURS
+    )
+    entities.extend(
+        NordpoolCheapestWindowSensor(coordinator, entry, hours) for hours in CHEAPEST_WINDOW_HOURS
+    )
+    entities.extend(
+        NordpoolCheapestWindowActiveSensor(coordinator, entry, hours)
+        for hours in CHEAPEST_WINDOW_HOURS
+    )
+    entities.extend(
+        (
+            NordpoolCheapestCustomWindowSensor(coordinator, entry),
+            NordpoolCheapestCustomWindowActiveSensor(coordinator, entry),
+        )
+    )
+    entities.extend(
+        (
+            NordpoolWindpowerSensor(coordinator, entry),
+            NordpoolWindpowerNowSensor(coordinator, entry),
+        )
+    )
+
+    entities.extend(
+        NordpoolNarrationSensor(coordinator, entry, language) for language in NARRATION_LANGUAGES
+    )
+
+    
+
+    async_add_entities(entities)
+
+
+#region _base
+class NordpoolBaseSensor(CoordinatorEntity[NordpoolPredictCoordinator], SensorEntity):
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+
+    def __init__(self, coordinator: NordpoolPredictCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name="Nordpool Predict FI",
+            manufacturer="Nordpool Predict",
+        )
+
+    def _build_forecast_attributes(
+        self,
+        series: list[SeriesPoint],
+        decimals: int | None = None,
+        offset: float = 0.0,
+    ) -> list[Mapping[str, Any]]:
+        return [
+            {
+                "timestamp": point.datetime.isoformat(),
+                "value": self._rounded_value(point.value + offset, decimals),
+            }
+            for point in series
+        ]
+
+    def _price_section(self) -> Mapping[str, Any] | None:
+        data = self.coordinator.data or {}
+        section = data.get("price")
+        if isinstance(section, Mapping):
+            return section
+        return None
+
+    def _cheapest_window(self, hours: int) -> PriceWindow | None:
+        section = self._price_section()
+        if not section:
+            return None
+        windows = section.get("cheapest_windows")
+        if not isinstance(windows, Mapping):
+            return None
+        window = windows.get(hours)
+        if isinstance(window, PriceWindow):
+            return window
+        return None
+
+    def _price_series(self) -> list[SeriesPoint]:
+        section = self._price_section()
+        if not section:
+            return []
+        series = section.get("forecast")
+        if not isinstance(series, list):
+            return []
+        return [point for point in series if isinstance(point, SeriesPoint)]
+
+    def _daily_averages(self) -> list[DailyAverage]:
+        section = self._price_section()
+        if not section:
+            return []
+        daily = section.get("daily_averages")
+        if not isinstance(daily, list):
+            return []
+        return [item for item in daily if isinstance(item, DailyAverage)]
+
+    def _future_point(self, hours_ahead: int) -> SeriesPoint | None:
+        series = self._price_series()
+        if not series:
+            return None
+        now = getattr(self.coordinator, "current_time", None)
+        if now is None:
+            now = datetime.now(timezone.utc)
+        target_time = now + timedelta(hours=hours_ahead)
+        # Find the point closest to target_time but >= target_time
+        for point in series:
+            if point.datetime >= target_time:
+                return point
+        return None
+
+    def _average_next_hours(self, hours: int) -> tuple[float | None, datetime | None]:
+        """Average price over the next X hours starting at next full hour (T+1).
+
+        Returns (average_price, start_timestamp). If any contiguous hour from
+        T+1..T+X is missing, returns (None, None).
+        """
+        series = self._price_series()
+        if not series:
+            return None, None
+
+        now = getattr(self.coordinator, "current_time", None) or datetime.now(timezone.utc)
+        start_anchor = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+
+        # Find index of the first point exactly at the next full hour
+        try:
+            start_idx = next(i for i, p in enumerate(series) if p.datetime == start_anchor)
+        except StopIteration:
+            return None, None
+
+        # Verify we have 'hours' contiguous hourly points starting at start_anchor
+        points: list[SeriesPoint] = []
+        for i in range(hours):
+            idx = start_idx + i
+            if idx >= len(series):
+                return None, None
+            point = series[idx]
+            if point.datetime != start_anchor + timedelta(hours=i):
+                return None, None
+            points.append(point)
+
+        average = sum(p.value for p in points) / hours
+        return average, start_anchor
+
+    @staticmethod
+    def _rounded_value(value: float, decimals: int | None) -> float | int:
+        if decimals is None:
+            return value
+        rounded = round(value, decimals)
+        if decimals == 0:
+            return int(rounded)
+        return rounded
+
+    def _extra_fees_cents(self) -> float:
+        return getattr(self.coordinator, "extra_fees_cents", 0.0)
+
+    def _apply_extra_fees(self, value: float | None) -> float | None:
+        if value is None:
+            return None
+        return value + self._extra_fees_cents()
+
+
+#region _price
+class NordpoolPriceSensor(NordpoolBaseSensor):
+    _attr_translation_key = "price"
+    _attr_icon = "mdi:chart-line"
+    _attr_native_unit_of_measurement = "c/kWh"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: NordpoolPredictCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_price"
+        self._attr_name = "Price"
+
+    @property
+    def native_value(self) -> float | None:
+        current = self._series_point("current")
+        adjusted = self._apply_extra_fees(current.value if current else None)
+        return round(adjusted, 1) if adjusted is not None else None
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        data = self._price_section()
+        if not data:
+            return None
+
+        forecast_start = data.get("forecast_start")
+        if isinstance(forecast_start, datetime):
+            forecast_start_iso = forecast_start.isoformat()
+        else:
+            forecast_start_iso = None
+        forecast = self._build_forecast_attributes(
+            data.get("forecast", []),
+            decimals=1,
+            offset=self._extra_fees_cents(),
+        )
+        result = {
+            ATTR_FORECAST: forecast,
+            ATTR_FORECAST_START: forecast_start_iso,
+            ATTR_RAW_SOURCE: self.coordinator.base_url,
+            ATTR_EXTRA_FEES: self._extra_fees_cents(),
+        }
+        return result
+
+    def _series_point(self, key: str) -> SeriesPoint | None:
+        section = self._price_section()
+        if not section:
+            return None
+        value = section.get(key)
+        if isinstance(value, SeriesPoint):
+            return value
+        return None
+
+
+#region _price_now
+class NordpoolPriceNowSensor(NordpoolBaseSensor):
+    _attr_translation_key = "price_now"
+    _attr_icon = "mdi:cash-clock"
+    _attr_native_unit_of_measurement = "c/kWh"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: NordpoolPredictCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_price_now"
+        self._attr_name = "Price Now"
+
+    @property
+    def native_value(self) -> float | None:
+        point = self._latest_point()
+        adjusted = self._apply_extra_fees(point.value if point else None)
+        return round(adjusted, 1) if adjusted is not None else None
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        point = self._latest_point()
+        return {
+            ATTR_TIMESTAMP: point.datetime.isoformat() if point else None,
+            ATTR_RAW_SOURCE: self.coordinator.base_url,
+            ATTR_EXTRA_FEES: self._extra_fees_cents(),
+        }
+
+    def _latest_point(self) -> SeriesPoint | None:
+        series = self._price_series()
+        if not series:
+            return None
+        # Use coordinator's current_time if available, otherwise fallback to datetime.now(timezone.utc)
+        now = getattr(self.coordinator, "current_time", None)
+        if now is None:
+            now = datetime.now(timezone.utc)
+        latest: SeriesPoint | None = None
+        for point in series:
+            if point.datetime <= now:
+                latest = point
+            else:
+                break
+        return latest
+
+
+#region _price_daily
+class NordpoolPriceDailyAverageSensor(NordpoolBaseSensor):
+    _attr_translation_key = "price_daily_average"
+    _attr_icon = "mdi:calendar-clock"
+    _attr_native_unit_of_measurement = "c/kWh"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: NordpoolPredictCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_price_daily_average"
+        self._attr_name = "Daily Average Price"
+
+    @property
+    def native_value(self) -> float | None:
+        points = self._aggregate_points()
+        if not points:
+            return None
+        average = sum(point.value for point in points) / len(points)
+        adjusted = self._apply_extra_fees(average)
+        return round(adjusted, 1) if adjusted is not None else None
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        daily_list = self._daily_averages()
+        span_start = None
+        span_end = None
+        if daily_list:
+            span_start = min((item.start for item in daily_list), default=None)
+            span_end = max((item.end for item in daily_list), default=None)
+        entries = [
+            {
+                "date": item.date.isoformat(),
+                "start": item.start.isoformat(),
+                "end": item.end.isoformat(),
+                "average": round(self._apply_extra_fees(item.average), 1),
+                "hours": len(item.points),
+                "points": self._build_forecast_attributes(
+                    item.points,
+                    decimals=1,
+                    offset=self._extra_fees_cents(),
+                ),
+            }
+            for item in daily_list
+        ]
+        return {
+            ATTR_DAILY_AVERAGES: entries,
+            ATTR_RAW_SOURCE: self.coordinator.base_url,
+            ATTR_EXTRA_FEES: self._extra_fees_cents(),
+            ATTR_DAILY_AVERAGE_SPAN_START: span_start.isoformat() if span_start else None,
+            ATTR_DAILY_AVERAGE_SPAN_END: span_end.isoformat() if span_end else None,
+        }
+
+    def _aggregate_points(self) -> list[SeriesPoint]:
+        daily_list = self._daily_averages()
+        points: list[SeriesPoint] = []
+        for item in daily_list:
+            points.extend(item.points)
+        return points
+
+    def _current_daily_average(self) -> DailyAverage | None:
+        daily_list = self._daily_averages()
+        if not daily_list:
+            return None
+        now = getattr(self.coordinator, "current_time", None) or datetime.now(timezone.utc)
+        now_utc = now.astimezone(timezone.utc)
+        for item in daily_list:
+            start_utc = item.start.astimezone(timezone.utc)
+            end_utc = item.end.astimezone(timezone.utc)
+            if start_utc <= now_utc < end_utc:
+                return item
+        return None
+
+
+#region _price_next
+class NordpoolPriceNextHoursSensor(NordpoolBaseSensor):
+    _attr_icon = "mdi:cash-clock"
+    _attr_native_unit_of_measurement = "c/kWh"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: NordpoolPredictCoordinator, entry: ConfigEntry, hours: int) -> None:
+        super().__init__(coordinator, entry)
+        self._hours = hours
+        self._attr_translation_key = f"price_next_{hours}h"
+        self._attr_unique_id = f"{entry.entry_id}_price_next_{hours}h"
+        self._attr_name = f"Price Next {hours}h"
+
+    @property
+    def native_value(self) -> float | None:
+        average, _ = self._average_next_hours(self._hours)
+        adjusted = self._apply_extra_fees(average)
+        return round(adjusted, 1) if adjusted is not None else None
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        _, start_time = self._average_next_hours(self._hours)
+        return {
+            ATTR_TIMESTAMP: start_time.isoformat() if start_time else None,
+            ATTR_RAW_SOURCE: self.coordinator.base_url,
+            ATTR_EXTRA_FEES: self._extra_fees_cents(),
+        }
+
+
+#region _windows
+class _NordpoolCheapestWindowBaseSensor(NordpoolBaseSensor):
+    def __init__(self, coordinator: NordpoolPredictCoordinator, entry: ConfigEntry, hours: int) -> None:
+        super().__init__(coordinator, entry)
+        self._hours = hours
+
+    def _window(self) -> PriceWindow | None:
+        return self._cheapest_window(self._hours)
+
+    def _window_attributes(self, window: PriceWindow | None) -> dict[str, Any]:
+        meta = self._cheapest_windows_meta()
+        helsinki_tz = self.coordinator._get_helsinki_timezone()
+        attributes: dict[str, Any] = {
+            ATTR_RAW_SOURCE: self.coordinator.base_url,
+            ATTR_WINDOW_DURATION: self._hours,
+            ATTR_EXTRA_FEES: self._extra_fees_cents(),
+            ATTR_WINDOW_LOOKAHEAD_HOURS: self._coerce_int(meta.get("lookahead_hours")),
+            ATTR_WINDOW_LOOKAHEAD_LIMIT: self._coerce_datetime_iso(meta.get("lookahead_limit")),
+            ATTR_CHEAPEST_WINDOW_START_HOUR: self._coerce_int(meta.get("start_hour")),
+            ATTR_CHEAPEST_WINDOW_END_HOUR: self._coerce_int(meta.get("end_hour")),
+        }
+        if window:
+            start_local = window.start.astimezone(helsinki_tz)
+            end_local = window.end.astimezone(helsinki_tz)
+            attributes[ATTR_WINDOW_START] = start_local.isoformat()
+            attributes[ATTR_WINDOW_END] = end_local.isoformat()
+            attributes[ATTR_WINDOW_POINTS] = self._build_forecast_attributes(
+                window.points,
+                decimals=1,
+                offset=self._extra_fees_cents(),
+            )
+        else:
+            attributes[ATTR_WINDOW_START] = None
+            attributes[ATTR_WINDOW_END] = None
+            attributes[ATTR_WINDOW_POINTS] = []
+        return attributes
+
+    def _cheapest_windows_meta(self) -> Mapping[str, Any]:
+        section = self._price_section()
+        if not section:
+            return {}
+        meta = section.get("cheapest_windows_meta")
+        if isinstance(meta, Mapping):
+            return meta
+        return {}
+
+    @staticmethod
+    def _coerce_int(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float)):
+            return int(value)
+        return None
+
+    @staticmethod
+    def _coerce_datetime_iso(value: Any) -> str | None:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return None
+
+
+class NordpoolCheapestWindowSensor(_NordpoolCheapestWindowBaseSensor):
+    _attr_icon = "mdi:clock-check-outline"
+    _attr_native_unit_of_measurement = "c/kWh"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: NordpoolPredictCoordinator, entry: ConfigEntry, hours: int) -> None:
+        super().__init__(coordinator, entry, hours)
+        self._attr_translation_key = f"cheapest_{hours}h"
+        self._attr_unique_id = f"{entry.entry_id}_cheapest_{hours}h"
+        self._attr_name = f"Cheapest {hours}h Price Window"
+
+    @property
+    def native_value(self) -> float | None:
+        window = self._window()
+        if not window:
+            return None
+        adjusted = self._apply_extra_fees(window.average)
+        return round(adjusted, 1)
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        window = self._window()
+        return self._window_attributes(window)
+
+
+class NordpoolCheapestWindowActiveSensor(_NordpoolCheapestWindowBaseSensor):
+    _attr_icon = "mdi:clock-start"
+
+    def __init__(self, coordinator: NordpoolPredictCoordinator, entry: ConfigEntry, hours: int) -> None:
+        super().__init__(coordinator, entry, hours)
+        self._attr_translation_key = f"cheapest_{hours}h_active"
+        self._attr_unique_id = f"{entry.entry_id}_cheapest_{hours}h_active"
+        self._attr_name = f"Cheapest {hours}h Window Active"
+
+    @property
+    def native_value(self) -> bool:
+        window = self._window()
+        if not window:
+            return False
+        now = getattr(self.coordinator, "current_time", None) or datetime.now(timezone.utc)
+        return window.start <= now < window.end
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        window = self._window()
+        return self._window_attributes(window)
+
+#region _windows_custom
+class _NordpoolCheapestCustomWindowBaseSensor(NordpoolBaseSensor):
+    def __init__(self, coordinator: NordpoolPredictCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+
+    def _custom_section(self) -> Mapping[str, Any] | None:
+        section = self._price_section()
+        if not section:
+            return None
+        custom = section.get(CUSTOM_WINDOW_KEY)
+        if isinstance(custom, Mapping):
+            return custom
+        return None
+
+    def _window(self) -> PriceWindow | None:
+        section = self._custom_section()
+        if not section:
+            return None
+        window = section.get("window")
+        if isinstance(window, PriceWindow):
+            return window
+        return None
+
+    def _window_attributes(self, window: PriceWindow | None) -> dict[str, Any]:
+        section = self._custom_section() or {}
+        hours = self._coerce_int(section.get("hours"))
+        start_hour = self._coerce_int(section.get("start_hour"))
+        end_hour = self._coerce_int(section.get("end_hour"))
+        shared_meta = self._shared_meta()
+        helsinki_tz = self.coordinator._get_helsinki_timezone()
+        attributes: dict[str, Any] = {
+            ATTR_RAW_SOURCE: self.coordinator.base_url,
+            ATTR_WINDOW_DURATION: hours,
+            ATTR_EXTRA_FEES: self._extra_fees_cents(),
+            ATTR_CUSTOM_WINDOW_HOURS: hours,
+            ATTR_CUSTOM_WINDOW_START_HOUR: start_hour,
+            ATTR_CUSTOM_WINDOW_END_HOUR: end_hour,
+            ATTR_CUSTOM_WINDOW_LOOKAHEAD_HOURS: self._coerce_int(section.get("lookahead_hours")),
+            ATTR_CUSTOM_WINDOW_LOOKAHEAD_LIMIT: self._coerce_datetime_iso(
+                section.get("lookahead_limit")
+            ),
+            ATTR_WINDOW_LOOKAHEAD_HOURS: self._coerce_int(shared_meta.get("lookahead_hours")),
+            ATTR_WINDOW_LOOKAHEAD_LIMIT: self._coerce_datetime_iso(shared_meta.get("lookahead_limit")),
+        }
+        if window:
+            start_local = window.start.astimezone(helsinki_tz)
+            end_local = window.end.astimezone(helsinki_tz)
+            attributes[ATTR_WINDOW_START] = start_local.isoformat()
+            attributes[ATTR_WINDOW_END] = end_local.isoformat()
+            attributes[ATTR_WINDOW_POINTS] = self._build_forecast_attributes(
+                window.points,
+                decimals=1,
+                offset=self._extra_fees_cents(),
+            )
+        else:
+            attributes[ATTR_WINDOW_START] = None
+            attributes[ATTR_WINDOW_END] = None
+            attributes[ATTR_WINDOW_POINTS] = []
+        return attributes
+
+    def _shared_meta(self) -> Mapping[str, Any]:
+        section = self._price_section()
+        if not section:
+            return {}
+        meta = section.get("cheapest_windows_meta")
+        if isinstance(meta, Mapping):
+            return meta
+        return {}
+
+    @staticmethod
+    def _coerce_int(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float)):
+            return int(value)
+        return None
+
+    @staticmethod
+    def _coerce_datetime_iso(value: Any) -> str | None:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return None
+
+
+class NordpoolCheapestCustomWindowSensor(_NordpoolCheapestCustomWindowBaseSensor):
+    _attr_icon = "mdi:clock-check-outline"
+    _attr_native_unit_of_measurement = "c/kWh"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_translation_key = "cheapest_custom"
+
+    def __init__(self, coordinator: NordpoolPredictCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_cheapest_custom"
+        self._attr_name = "Cheapest Custom Price Window"
+
+    @property
+    def native_value(self) -> float | None:
+        window = self._window()
+        if not window:
+            return None
+        adjusted = self._apply_extra_fees(window.average)
+        return round(adjusted, 1)
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        window = self._window()
+        return self._window_attributes(window)
+
+
+class NordpoolCheapestCustomWindowActiveSensor(_NordpoolCheapestCustomWindowBaseSensor):
+    _attr_icon = "mdi:clock-start"
+    _attr_translation_key = "cheapest_custom_active"
+
+    def __init__(self, coordinator: NordpoolPredictCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_cheapest_custom_active"
+        self._attr_name = "Cheapest Custom Window Active"
+
+    @property
+    def native_value(self) -> bool:
+        window = self._window()
+        if not window:
+            return False
+        now = getattr(self.coordinator, "current_time", None) or datetime.now(timezone.utc)
+        return window.start <= now < window.end
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        window = self._window()
+        return self._window_attributes(window)
+
+
+#region _windpower
+class NordpoolWindpowerSensor(NordpoolBaseSensor):
+    _attr_translation_key = "windpower"
+    _attr_icon = "mdi:weather-windy"
+    _attr_native_unit_of_measurement = "MW"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: NordpoolPredictCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_windpower"
+        # Compact name for canonical object_id
+        self._attr_name = "Windpower"
+
+    @property
+    def native_value(self) -> float | None:
+        section = self._section()
+        current = section.get("current") if section else None
+        if isinstance(current, SeriesPoint):
+            return int(round(current.value))
+        return None
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        section = self._section()
+        if not section:
+            return None
+        series: list[SeriesPoint] = section.get("series", [])
+        forecast_series = [
+            point for point in series if isinstance(point, SeriesPoint)
+        ]
+        return {
+            ATTR_WIND_FORECAST: self._build_forecast_attributes(forecast_series, decimals=0),
+            ATTR_RAW_SOURCE: self.coordinator.base_url,
+        }
+
+    def _section(self) -> Mapping[str, Any] | None:
+        return (self.coordinator.data or {}).get("windpower")
+
+
+#region _windpower_now
+class NordpoolWindpowerNowSensor(NordpoolBaseSensor):
+    _attr_translation_key = "windpower_now"
+    _attr_icon = "mdi:weather-windy"
+    _attr_native_unit_of_measurement = "MW"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: NordpoolPredictCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_windpower_now"
+        # Compact name for canonical object_id
+        self._attr_name = "Windpower Now"
+
+    @property
+    def native_value(self) -> float | None:
+        point = self._current_point()
+        if not point:
+            return None
+        return int(round(point.value))
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        point = self._current_point()
+        return {
+            ATTR_TIMESTAMP: point.datetime.isoformat() if point else None,
+            ATTR_RAW_SOURCE: self.coordinator.base_url,
+        }
+
+    def _current_point(self) -> SeriesPoint | None:
+        section = (self.coordinator.data or {}).get("windpower")
+        if not isinstance(section, Mapping):
+            return None
+        current = section.get("current")
+        if isinstance(current, SeriesPoint):
+            return current
+        series = section.get("series")
+        if isinstance(series, list):
+            now = getattr(self.coordinator, "current_time", None)
+            if now is None:
+                now = datetime.now(timezone.utc)
+            latest: SeriesPoint | None = None
+            for point in series:
+                if not isinstance(point, SeriesPoint):
+                    continue
+                if point.datetime <= now:
+                    latest = point
+                else:
+                    break
+            if latest:
+                return latest
+        return None
+
+
+#region _narration
+class NordpoolNarrationSensor(NordpoolBaseSensor):
+    _attr_icon = "mdi:file-document-edit-outline"
+
+    def __init__(self, coordinator: NordpoolPredictCoordinator, entry: ConfigEntry, language: str) -> None:
+        super().__init__(coordinator, entry)
+        self._language = language
+        self._attr_translation_key = f"narration_{language}"
+        display_language = NARRATION_LANGUAGE_NAMES.get(language, language.upper())
+        self._attr_unique_id = f"{entry.entry_id}_narration_{language}"
+        self._attr_name = f"Narration ({display_language})"
+
+    @property
+    def native_value(self) -> str | None:
+        section = self._section()
+        if not section:
+            return None
+        summary = section.get("summary")
+        if isinstance(summary, str) and summary:
+            return summary
+        return None
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        section = self._section()
+        attributes: dict[str, Any] = {
+            ATTR_LANGUAGE: self._language,
+            ATTR_RAW_SOURCE: self.coordinator.base_url,
+        }
+        if not section:
+            return attributes
+        summary = section.get("summary")
+        content = section.get("content")
+        source = section.get("source")
+        if isinstance(summary, str) and summary:
+            attributes[ATTR_NARRATION_SUMMARY] = summary
+        if isinstance(content, str) and content:
+            attributes[ATTR_NARRATION_CONTENT] = content
+        if isinstance(source, str) and source:
+            attributes[ATTR_SOURCE_URL] = source
+        return attributes
+
+    def _section(self) -> Mapping[str, Any] | None:
+        data = self.coordinator.data or {}
+        narration = data.get("narration")
+        if not isinstance(narration, Mapping):
+            return None
+        section = narration.get(self._language)
+        if isinstance(section, Mapping):
+            return section
+        return None
+
+
+ 

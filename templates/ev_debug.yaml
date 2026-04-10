@@ -1,0 +1,5 @@
+sensor:
+  - name: "EV Debug Test"
+    unique_id: ev_debug_test
+    state: >
+      OK

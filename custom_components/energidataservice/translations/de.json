@@ -1,0 +1,124 @@
+{
+    "config": {
+        "error": {
+            "invalid_template": "Die Vorlage für die Zusatzkosten ist ungültig, siehe {github_url}"
+        },
+        "abort": {
+            "already_configured": "Der angegebene Name existiert bereits!"
+        },
+        "step": {
+            "user": {
+                "title": "Basisinformationen",
+                "data": {
+                    "name": "Name",
+                    "country": "Land auswählen"
+                },
+                "description": "Ausgangsdaten für die Integration festlegen"
+            },
+            "region": {
+                "title": "Detailliertes Setup",
+                "data": {
+                    "area": "Preis Region",
+                    "vat": "Preise inkl. MwSt. anzeigen",
+                    "decimals": "Dezimalstellen",
+                    "pricetype": "Preis berechnet in",
+                    "cost_template": "Vorlage für zusätzliche Kosten",
+                    "in_cent": "Preise in Cent anzeigen",
+                    "fixed_value": "Preis einfügen - OHNE MwSt."
+                },
+                "description": "Details für {name} in {country} festlegen"
+            },
+            "enable_forecast": {
+                "title": "Prognosen aktivieren?",
+                "data": {
+                    "enable_forecast": "Prognosen aktivieren"
+                },
+                "description": "Sollte {name} in {country} die von der KI vorhergesagten Preise für die nächsten 7 Tage anzeigen?"
+            },
+            "carnot_credentials": {
+                "title": "API-Anmeldeinformationen für die Carnot-Plattform ({carnot_url})",
+                "data": {
+                    "email": "E-Mail",
+                    "api_key": "API-Schlüssel"
+                },
+                "description": "Siehe {carnot_url}"
+            },
+            "enable_extras": {
+                "title": "Zusätzliche Dienste aktivieren?",
+                "data": {
+                    "enable_forecast": "KI-Prognosen von Carnot",
+                    "enable_tariffs": "Tarifdaten automatisch abrufen"
+                },
+                "description": "Sollte {name} in {country} zusätzliche Dienste nutzen?"
+            },
+            "tariff_settings": {
+                "title": "Netzbetreiber auswählen",
+                "description": "Im Zweifel finden Sie Ihren Netzbetreiber hier: {dk_netoperators} (NUR für dänische Übertragungsnetzbetreiber)",
+                "data": {
+                    "tariff_charge_owner": "Netzbetreiber auswählen"
+                }
+            }
+        }
+    },
+    "options": {
+        "error": {
+            "invalid_template": "Die Vorlage für die Zusatzkosten ist ungültig, siehe {github_url}"
+        },
+        "abort": {
+            "already_configured": "Der angegebene Name existiert bereits!"
+        },
+        "step": {
+            "region": {
+                "title": "Detailliertes Setup",
+                "data": {
+                    "area": "Preis Region",
+                    "vat": "Preise inkl. MwSt. anzeigen",
+                    "decimals": "Dezimalstellen",
+                    "pricetype": "Preis wird berechnet in",
+                    "cost_template": "Vorlage für zusätzliche Kosten",
+                    "in_cent": "Preise in Cent anzeigen",
+                    "fixed_value": "Preis - OHNE MwSt. - eingeben"
+                },
+                "description": "Details für {name} in {country} festlegen"
+            },
+            "enable_forecast": {
+                "title": "Prognosen aktivieren?",
+                "data": {
+                    "enable_forecast": "Prognosen aktivieren"
+                },
+                "description": "Sollte {name} in {country} die von der KI vorhergesagten Preise für die nächsten 7 Tage anzeigen?"
+            },
+            "carnot_credentials": {
+                "title": "API-Anmeldeinformationen für die Carnot-Plattform ({carnot_url})",
+                "data": {
+                    "email": "E-Mail",
+                    "api_key": "API-Schlüssel"
+                },
+                "description": "Siehe {carnot_url}"
+            },
+            "enable_extras": {
+                "title": "Zusätzliche Dienste aktivieren?",
+                "data": {
+                    "enable_forecast": "AI Vorhersage von Carnot",
+                    "enable_tariffs": "Tarifdaten automatisch abrufen"
+                },
+                "description": "Sollte {name} in {country} zusätzliche Dienste nutzen?"
+            },
+            "tariff_settings": {
+                "title": "Wähle Netzbetreiber",
+                "description": "Im Zweifel finden Sie Ihren Netzbetreiber hier: {dk_netoperators} (NUR für dänische Übertragungsnetzbetreiber)",
+                "data": {
+                    "tariff_charge_owner": "Wähle Netzbetreiber"
+                }
+            },
+            "user": {
+                "title": "Grundlegende Informationen",
+                "data": {
+                    "name": "Name",
+                    "country": "Wähle ein Land"
+                },
+                "description": "Ausgangsdaten für die Integration festlegen"
+            }
+        }
+    }
+}

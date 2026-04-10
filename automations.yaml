@@ -1,0 +1,332 @@
+- id: '1775146735717'
+  alias: Systemtilstand
+  description: ''
+  triggers:
+    - trigger: state
+      entity_id:
+        - sensor.eh45khwp_status
+      to: 'Venter på godkendelse'
+  conditions: []
+  actions:
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: input_select.ev_charge_mode
+              state: 'Auto'
+          sequence:
+            - action: input_boolean.turn_on
+              metadata: {}
+              target:
+                entity_id: input_boolean.ev_ha_control_enabled
+              data: {}
+        - conditions:
+            - condition: state
+              entity_id: input_select.ev_charge_mode
+              state: 'Charge Now'
+          sequence: []
+        - conditions:
+            - condition: state
+              entity_id: input_select.ev_charge_mode
+              state: 'Monta Guest'
+          sequence: []
+  mode: single
+
+- id: 'ev_init_defaults_at_startup'
+  alias: EV - Init defaults at startup
+  description: ''
+  triggers:
+    - trigger: homeassistant
+      event: start
+  conditions: []
+  actions:
+    - action: input_number.set_value
+      metadata: {}
+      target:
+        entity_id: input_number.ev_guest_planned_target_soc
+      data:
+        value: 80
+    - action: input_select.select_option
+      target:
+        entity_id: input_select.ev_guest_target_quick
+      data:
+        option: "80"
+    - action: input_number.set_value
+      metadata: {}
+      target:
+        entity_id: input_number.ev_guest_planned_battery_kwh
+      data:
+        value: 77
+    - action: input_datetime.set_datetime
+      metadata: {}
+      target:
+        entity_id: input_datetime.ev_planned_ready_by
+      data:
+        datetime: "{{ today_at('09:00:00').strftime('%Y-%m-%d %H:%M:%S') if now() < today_at('09:00:00') else (today_at('09:00:00') + timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S') }}"
+  mode: single
+
+- id: 'ev_start_session_on_cable_connect'
+  alias: EV - Start session on cable connect
+  description: ''
+  triggers:
+    - trigger: state
+      entity_id:
+        - binary_sensor.charging_cable_connected
+      to: 'on'
+  conditions: []
+  actions:
+    - action: input_datetime.set_datetime
+      metadata: {}
+      target:
+        entity_id: input_datetime.ev_session_ready_by
+      data:
+        datetime: "{{ states('input_datetime.ev_planned_ready_by') }}"
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_target_soc
+      data:
+        value: "{{ states('input_number.ev_guest_planned_target_soc') | float(80) }}"
+    - action: input_number.set_value
+      metadata: {}
+      target:
+        entity_id: input_number.ev_session_start_soc
+      data:
+        value: "{{ states('sensor.battery_level') | float(0) }}"
+    - action: input_number.set_value
+      metadata: {}
+      target:
+        entity_id: input_number.ev_session_target_soc
+      data:
+        value: "{{ states('sensor.battery_target_charge_level') | float(80) }}"
+    - action: input_number.set_value
+      metadata: {}
+      target:
+        entity_id: input_number.ev_session_battery_kwh
+      data:
+        value: 77
+    - action: input_boolean.turn_on
+      metadata: {}
+      target:
+        entity_id: input_boolean.ev_session_active
+      data: {}
+  mode: single
+
+- id: 'ev_start_charging_stable'
+  alias: EV - Start charging stable
+  description: ''
+  triggers:
+    - trigger: state
+      entity_id:
+        - sensor.ev_charge_decision
+      to: 'LAD'
+      for:
+        hours: 0
+        minutes: 5
+        seconds: 0
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_ha_control_enabled
+      state: 'on'
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+    - condition: state
+      entity_id: binary_sensor.charging_cable_connected
+      state: 'on'  
+  actions:
+    - action: script.ev_charge_start
+      metadata: {}
+      data: {}
+  mode: single
+  
+- id: 'ev_stop_charging_stable'
+  alias: EV - Stop charging stable
+  description: ''
+  triggers:
+    - trigger: state
+      entity_id:
+        - sensor.ev_charge_decision
+      to: 'VENT'
+      for:
+        hours: 0
+        minutes: 15
+        seconds: 0
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_ha_control_enabled
+      state: 'on'
+
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+    - condition: state
+      entity_id: input_select.ev_charge_mode
+      state: 'Auto'
+
+    - condition: state
+      entity_id: binary_sensor.charging_cable_connected
+      state: 'on'
+
+  actions:
+    - action: script.ev_charge_stop
+      metadata: {}
+      data: {}
+  mode: single
+  
+- id: 'ev_control_reduced_ac_charging'
+  alias: EV - Control reduced AC charging
+  description: ''
+  triggers:
+    - trigger: state
+      entity_id:
+        - sensor.ev_charge_power_mode
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+    - condition: state
+      entity_id: input_boolean.ev_ha_control_enabled
+      state: 'on'
+  actions:
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: sensor.ev_charge_power_mode
+              state: 'FULL'
+          sequence:
+            - action: switch.turn_off
+              metadata: {}
+              target:
+                entity_id: switch.reduced_ac_charging
+              data: {}
+
+        - conditions:
+            - condition: state
+              entity_id: sensor.ev_charge_power_mode
+              state: 'REDUCED'
+          sequence:
+            - action: switch.turn_on
+              metadata: {}
+              target:
+                entity_id: switch.reduced_ac_charging
+              data: {}
+
+        - conditions:
+            - condition: state
+              entity_id: sensor.ev_charge_power_mode
+              state: 'STOP'
+          sequence:
+            - action: script.ev_charge_stop
+              metadata: {}
+              data: {}
+  mode: single
+  
+- id: 'ev_guest_target_sync'
+  alias: EV - Guest target sync (80/100)
+  description: Sync quick target til rigtig target
+  triggers:
+    - trigger: state
+      entity_id:
+        - input_select.ev_guest_target_quick
+  conditions: []
+  actions:
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_guest_planned_target_soc
+      data:
+        value: "{{ states('input_select.ev_guest_target_quick') | int }}"
+  mode: single
+  
+- id: 'ev_guest_target_toggle_sync'
+  alias: EV - Guest target toggle sync
+  triggers:
+    - trigger: state
+      entity_id:
+        - input_boolean.ev_guest_target_100
+
+  actions:
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: input_boolean.ev_guest_target_100
+              state: 'on'
+          sequence:
+            - action: input_number.set_value
+              target:
+                entity_id: input_number.ev_guest_planned_target_soc
+              data:
+                value: 100
+      default:
+        - action: input_number.set_value
+          target:
+            entity_id: input_number.ev_guest_planned_target_soc
+          data:
+            value: 80
+
+  mode: single
+  
+- id: 'ev_sync_mode_and_ha_control'
+  alias: EV - Sync mode and HA control
+  description: ''
+  triggers:
+    - trigger: state
+      entity_id:
+        - input_select.ev_charge_mode
+  conditions: []
+  actions:
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: input_select.ev_charge_mode
+              state: 'Stop'
+          sequence:
+            - action: input_boolean.turn_off
+              target:
+                entity_id: input_boolean.ev_ha_control_enabled
+
+        - conditions:
+            - condition: state
+              entity_id: input_select.ev_charge_mode
+              state: 'Auto'
+          sequence:
+            - action: input_boolean.turn_on
+              target:
+                entity_id: input_boolean.ev_ha_control_enabled
+
+        - conditions:
+            - condition: state
+              entity_id: input_select.ev_charge_mode
+              state: 'Charge Now'
+          sequence:
+            - action: input_boolean.turn_on
+              target:
+                entity_id: input_boolean.ev_ha_control_enabled
+
+        - conditions:
+            - condition: state
+              entity_id: input_select.ev_charge_mode
+              state: 'Monta Guest'
+          sequence:
+            - action: input_boolean.turn_on
+              target:
+                entity_id: input_boolean.ev_ha_control_enabled
+  mode: single
+  
+- id: 'ev_sync_planned_to_session_when_idle'
+  alias: EV - Sync planned ready time to session when idle
+  description: ''
+  triggers:
+    - trigger: state
+      entity_id:
+        - input_datetime.ev_planned_ready_by
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'off'
+  actions:
+    - action: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_session_ready_by
+      data:
+        datetime: "{{ states('input_datetime.ev_planned_ready_by') }}"
+  mode: single
