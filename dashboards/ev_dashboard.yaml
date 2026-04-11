@@ -31,8 +31,6 @@ views:
                 name: HA må styre opladning
               - entity: input_select.ev_charge_mode
                 name: Lade-mode
-              - entity: input_boolean.ev_manual_override
-                name: Manuel override
               - entity: input_datetime.ev_planned_ready_by
                 name: Klar til tidspunkt
               - type: section
