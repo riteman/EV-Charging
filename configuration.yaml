@@ -41,6 +41,13 @@ input_select:
       - "100"
     initial: "80"
 
+  intellicharge_desired_mode:
+    name: IntelliCharge Mode (Desired)
+    options:
+      - Smart
+      - Allow Always
+    initial: Smart    
+
 input_boolean:
   ev_ha_control_enabled:
     name: EV HA Control Enabled
@@ -52,7 +59,11 @@ input_boolean:
     name: EV Session Active
     
   ev_simulation_mode:
-    name: EV Simulation Mode    
+    name: EV Simulation Mode
+
+  intellicharge_smart_enabled:
+    name: IntelliCharge Smart Enabled
+    icon: mdi:solar-power 
 
 input_datetime:
   ev_planned_ready_by:
@@ -182,6 +193,8 @@ template:
     - sensor:    
       - name: "EV Solar Power to Car"
         unique_id: ev_solar_power_to_car
+        device_class: power
+        state_class: measurement
         unit_of_measurement: "kW"
         state: >
           {% set export = [states('sensor.grid_export_power_average_2m_safe') | float(0), 0] | max %}
@@ -198,14 +211,17 @@ template:
           
       - name: "EV Grid Power to Car"
         unique_id: ev_grid_power_to_car
+        device_class: power
+        state_class: measurement
         unit_of_measurement: "kW"
         state: >
           {% set total = 11 * (states('sensor.ev_target_ampere_stable') | float(0) / 16) %}
           {% set solar = states('sensor.ev_solar_power_to_car') | float(0) %}
-          {{ [total - solar, 0] | max | round(2) }}    
+          {{ [total - solar, 0] | max | round(2) }}
           
       - name: "EV Solar Fraction"
         unique_id: ev_solar_fraction
+        state_class: measurement
         unit_of_measurement: "%"
         state: >
           {% set total = 11 * (states('sensor.ev_target_ampere_stable') | float(0) / 16) %}
@@ -214,8 +230,7 @@ template:
             {{ (100 * solar / total) | round(0) }}
           {% else %}
             0
-          {% endif %}    
-        
+          {% endif %}
     
       - name: "EV Remaining Energy kWh"
         unique_id: ev_remaining_energy_kwh
@@ -1114,26 +1129,25 @@ template:
         device_class: timestamp
         state: >
           {% set remaining = states('sensor.ev_remaining_energy_live_kwh') | float(0) %}
-          {% set ready = states('input_datetime.ev_session_ready_by') %}
+          {% set ready_ts = state_attr('input_datetime.ev_session_ready_by', 'timestamp') | float(0) %}
           {% set power_kw = 11 %}
           {% set efficiency = 0.92 %}
+          {% set now_ts = as_timestamp(now()) | float(0) %}
 
-          {% if ready in ['unknown', 'unavailable', '', 'none'] %}
+          {% if ready_ts <= 0 %}
             {{ now().isoformat() }}
           {% elif remaining <= 0 %}
             {{ now().isoformat() }}
           {% else %}
-            {% set ready_ts = as_timestamp(ready) %}
             {% set need_hours = remaining / (power_kw * efficiency) %}
             {% set prices =
               (state_attr('sensor.stromligning_current_price_vat', 'prices') or [])
               + (state_attr('binary_sensor.stromligning_tomorrow_available_vat', 'prices') or [])
             %}
-            {% set now_ts = as_timestamp(now()) %}
             {% set ns = namespace(candidates=[], remaining=need_hours, finish_ts=0) %}
 
             {% for item in prices %}
-              {% set start_ts = as_timestamp(item.start) %}
+              {% set start_ts = as_timestamp(item.start) | float(0) %}
               {% set end_ts = start_ts + 3600 %}
               {% set overlap_start = [start_ts, now_ts] | max %}
               {% set overlap_end = [end_ts, ready_ts] | min %}
@@ -1156,9 +1170,9 @@ template:
             {% endfor %}
 
             {% if ns.finish_ts > 0 %}
-              {{ as_local(as_datetime(ns.finish_ts | timestamp_utc)).isoformat() }}
+              {{ (ns.finish_ts | timestamp_local) | replace(' ', 'T') }}
             {% else %}
-              {{ as_local(as_datetime(ready_ts | timestamp_utc)).isoformat() }}
+              {{ (ready_ts | timestamp_local) | replace(' ', 'T') }}
             {% endif %}
           {% endif %}
 
@@ -1169,7 +1183,16 @@ template:
           assumed_power_kw: 11
           ready_by: >
             {{ states('input_datetime.ev_session_ready_by') }}
-            
+        
+      - name: "EV ETA If Solar Stops Now Clock"
+        unique_id: ev_eta_if_solar_stops_now_clock
+        state: >
+          {% set ts = states('sensor.ev_eta_if_solar_stops_now') %}
+          {% if ts in ['unknown', 'unavailable', '', 'none'] %}
+            unknown
+          {% else %}
+            {{ as_timestamp(ts) | timestamp_custom('%H:%M', true) }}
+          {% endif %}
 
       - name: "EV ETA If Solar Continues Until Sunset"
         unique_id: ev_eta_if_solar_continues_until_sunset
@@ -1177,19 +1200,18 @@ template:
         state: >
           {% set remaining = states('sensor.ev_remaining_energy_live_kwh') | float(0) %}
           {% set amp = states('sensor.ev_target_ampere_stable') | float(0) %}
-          {% set ready = states('input_datetime.ev_session_ready_by') %}
+          {% set ready_ts = state_attr('input_datetime.ev_session_ready_by', 'timestamp') | float(0) %}
           {% set efficiency = 0.92 %}
           {% set full_power_kw = 11 %}
-          {% set now_ts = as_timestamp(now()) %}
+          {% set now_ts = as_timestamp(now()) | float(0) %}
+          {% set sunset_ts = as_timestamp(state_attr('sun.sun', 'next_setting')) | float(0) %}
+          {% set sun_up = is_state('sun.sun', 'above_horizon') %}
 
-          {% if ready in ['unknown', 'unavailable', '', 'none'] %}
+          {% if ready_ts <= 0 %}
             {{ now().isoformat() }}
           {% elif remaining <= 0 %}
             {{ now().isoformat() }}
           {% else %}
-            {% set ready_ts = as_timestamp(ready) %}
-            {% set sunset_ts = as_timestamp(state_attr('sun.sun', 'next_setting')) | float(0) %}
-            {% set sun_up = is_state('sun.sun', 'above_horizon') %}
             {% set has_day_phase = amp >= 6 and sun_up and sunset_ts > now_ts %}
 
             {% if has_day_phase %}
@@ -1208,7 +1230,7 @@ template:
 
             {% if remaining_after_day <= 0 and day_power_kw > 0 %}
               {% set hours_needed = remaining / (day_power_kw * efficiency) %}
-              {{ as_local(now() + timedelta(hours=hours_needed)).isoformat() }}
+              {{ ((now_ts + (hours_needed * 3600)) | timestamp_local) | replace(' ', 'T') }}
             {% else %}
               {% set need_hours = remaining_after_day / (full_power_kw * efficiency) %}
               {% set prices =
@@ -1218,7 +1240,7 @@ template:
               {% set ns = namespace(candidates=[], remaining=need_hours, finish_ts=0) %}
 
               {% for item in prices %}
-                {% set start_ts = as_timestamp(item.start) %}
+                {% set start_ts = as_timestamp(item.start) | float(0) %}
                 {% set end_ts = start_ts + 3600 %}
                 {% set overlap_start = [start_ts, day_end_ts] | max %}
                 {% set overlap_end = [end_ts, ready_ts] | min %}
@@ -1241,9 +1263,9 @@ template:
               {% endfor %}
 
               {% if ns.finish_ts > 0 %}
-                {{ as_local(as_datetime(ns.finish_ts | timestamp_utc)).isoformat() }}
+                {{ (ns.finish_ts | timestamp_local) | replace(' ', 'T') }}
               {% else %}
-                {{ as_local(as_datetime(ready_ts | timestamp_utc)).isoformat() }}
+                {{ (ready_ts | timestamp_local) | replace(' ', 'T') }}
               {% endif %}
             {% endif %}
           {% endif %}
@@ -1258,6 +1280,16 @@ template:
             {{ state_attr('sun.sun', 'next_setting') }}
           ready_by: >
             {{ states('input_datetime.ev_session_ready_by') }}
+
+      - name: "EV ETA If Solar Continues Until Sunset Clock"
+        unique_id: ev_eta_if_solar_continues_until_sunset_clock
+        state: >
+          {% set ts = states('sensor.ev_eta_if_solar_continues_until_sunset') %}
+          {% if ts in ['unknown', 'unavailable', '', 'none'] %}
+            unknown
+          {% else %}
+            {{ as_timestamp(ts) | timestamp_custom('%H:%M', true) }}
+          {% endif %}      
 
       - name: "EV ETA Window"
         unique_id: ev_eta_window
@@ -1383,8 +1415,29 @@ template:
           {% else %}
             unknown
           {% endif %}  
+
+      - name: "IntelliCharge Token Last Refresh"
+        unique_id: intellicharge_token_last_refresh
+        device_class: timestamp
+        state: >
+          {% set ts = states('sensor.intellicharge_api_auth') %}
+          {% if ts in ['unknown', 'unavailable', 'FEJL', '', 'none'] %}
+            {{ now().isoformat() }}
+          {% else %}
+            {{ as_datetime(ts).isoformat() }}
+          {% endif %}
+
+      - name: "IntelliCharge Token Age Hours"
+        unique_id: intellicharge_token_age_hours
+        unit_of_measurement: "h"
+        state: >
+          {% set ts = states('sensor.intellicharge_api_auth') %}
+          {% if ts in ['unknown', 'unavailable', 'FEJL', '', 'none'] %}
+            999
+          {% else %}
+            {{ ((as_timestamp(now()) - as_timestamp(ts)) / 3600) | round(2) }}
+          {% endif %}          
  # -----------------------------------------------------------------------------
-        
 
     - binary_sensor:
       - name: "EV Deadline Risk"
@@ -1417,7 +1470,10 @@ template:
         state: >
           {% set age = states('sensor.easee_token_age_hours') | float(0) %}
           {{ age > 24 }}    
-         
+
+      - name: "IntelliCharge Smart Sync Error"
+        state: >
+          {{ states('sensor.ev_intellicharge_smart_status_2') != states('input_select.intellicharge_desired_mode') }}         
 
 # 2. Kommandoen der styrer ampere 
 rest_command:
@@ -1428,6 +1484,25 @@ rest_command:
       authorization: "Bearer {{ state_attr('sensor.easee_api_access_token_final_2', 'accessToken') }}"
       content-type: "application/json"
     payload: '{"dynamicChargerCurrent": {{ ampere | int }}}'
+
+  intellicharge_set_smart:
+    url: "https://api.intellicharge.ai/api/v1/plant/3352"
+    method: PUT
+    headers:
+      authorization: "Bearer {{ state_attr('sensor.intellicharge_api_auth', 'access_token') }}"
+      content-type: "application/json"
+    payload: >
+      {"smart_0_export": 1, "allow_export_to_grid": false, "enable_buy_from_grid": true, "enable_sell_to_grid": true, "enable_idle": true, "enable_locked": true}
+
+
+  intellicharge_set_allow_always:
+    url: "https://api.intellicharge.ai/api/v1/plant/3352"
+    method: PUT
+    headers:
+      authorization: "Bearer {{ state_attr('sensor.intellicharge_api_auth', 'access_token') }}"
+      content-type: "application/json"
+    payload: >
+      {"smart_0_export": 0, "allow_export_to_grid": false, "enable_buy_from_grid": true, "enable_sell_to_grid": true, "enable_idle": true, "enable_locked": true}    
 
 
 rest:
@@ -1450,7 +1525,100 @@ rest:
         json_attributes:
           - accessToken
 
+  # 🔐 IntelliCharge AUTH
+  - resource: "https://api.intellicharge.ai/api/v1/login/access-token"
+    method: POST
+    payload: !secret intellicharge_login_payload
+    headers:
+      Content-Type: "application/x-www-form-urlencoded"
+      Accept: "application/json, text/plain, */*"
+    scan_interval: 43200
 
+    sensor:
+      - name: "IntelliCharge API Auth"
+        unique_id: intellicharge_api_auth
+        value_template: >
+          {% if value_json is defined and value_json.access_token is defined %}
+            {{ now().strftime('%Y-%m-%d %H:%M:%S') }}
+          {% else %}
+            FEJL
+          {% endif %}
+        json_attributes:
+          - access_token
+          - refresh_token
+          - token_type
+
+
+  # ⚡ IntelliCharge PLANT STATUS
+  - resource_template: "https://api.intellicharge.ai/api/v1/plant/3352"
+    method: GET
+    headers:
+      authorization: "Bearer {{ state_attr('sensor.intellicharge_api_auth', 'access_token') }}"
+      Accept: "application/json"
+    scan_interval: 300
+
+    sensor:
+      - name: "EV IntelliCharge Smart Status"
+        unique_id: ev_intellicharge_smart_status
+
+        value_template: >
+          {% if value_json.smart_0_export == 1 %}
+            Smart
+          {% elif value_json.smart_0_export == 0 %}
+            Allow Always
+          {% else %}
+            Ukendt
+          {% endif %}
+
+        icon: >
+          {% if value_json.smart_0_export == 1 %}
+            mdi:brain
+          {% else %}
+            mdi:flash
+          {% endif %}
+
+        json_attributes:
+          - smart_0_export
+          - allow_export_to_grid
+          - enable_buy_from_grid
+          - enable_sell_to_grid
+          - enable_idle
+          - enable_locked
+
+  - resource_template: "https://api.intellicharge.ai/api/v1/plant/3352"
+    method: GET
+    headers:
+      authorization: "Bearer {{ state_attr('sensor.intellicharge_api_auth', 'access_token') }}"
+      Accept: "application/json"
+    scan_interval: 300
+
+    sensor:
+      - name: "EV IntelliCharge Smart Status"
+        unique_id: ev_intellicharge_smart_status
+
+        value_template: >
+          {% if value_json.smart_0_export == 1 %}
+            Smart
+          {% elif value_json.smart_0_export == 0 %}
+            Allow Always
+          {% else %}
+            Ukendt
+          {% endif %}
+
+        icon: >
+          {% if value_json.smart_0_export == 1 %}
+            mdi:brain
+          {% else %}
+            mdi:flash
+          {% endif %}
+
+        json_attributes:
+          - smart_0_export
+          - allow_export_to_grid
+          - enable_buy_from_grid
+          - enable_sell_to_grid
+          - enable_idle
+          - enable_locked
 
 
           

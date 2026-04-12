@@ -1,0 +1,17 @@
+# Home Assistant
+.storage/
+home-assistant_v2.db
+secrets.yaml
+*.db-shm
+*.db-wal
+*.log
+deps/
+tts/
+backups/
+
+# HACS
+www/community/
+
+# OS
+.DS_Store
+Thumbs.db

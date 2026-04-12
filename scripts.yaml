@@ -23,3 +23,40 @@ ev_set_manual_ampere:
       data:
         ampere: "{{ states('input_number.ev_manual_ampere') | int(10) }}"
   mode: single
+
+intellicharge_export_allow_always:
+  alias: IntelliCharge Export Allow Always
+  sequence:
+    - service: rest_command.intellicharge_export_allow_always
+    - service: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.intellicharge_smart_enabled
+
+intellicharge_export_smart:
+  alias: IntelliCharge Export Smart
+  sequence:
+    - service: rest_command.intellicharge_export_smart
+    - service: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.intellicharge_smart_enabled
+
+intellicharge_apply_smart:
+  alias: IntelliCharge → Smart
+  sequence:
+    - service: rest_command.intellicharge_set_smart
+    - service: input_select.select_option
+      target:
+        entity_id: input_select.intellicharge_desired_mode
+      data:
+        option: "Smart"
+
+
+intellicharge_apply_allow:
+  alias: IntelliCharge → Allow Always
+  sequence:
+    - service: rest_command.intellicharge_set_allow_always
+    - service: input_select.select_option
+      target:
+        entity_id: input_select.intellicharge_desired_mode
+      data:
+        option: "Allow Always"          
