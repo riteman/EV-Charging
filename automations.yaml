@@ -136,6 +136,13 @@
     - action: script.ev_charge_start
       metadata: {}
       data: {}
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          Startet (mode={{ states('input_select.ev_charge_mode') }},
+          decision={{ states('sensor.ev_charge_decision') }},
+          amp={{ states('sensor.ev_target_ampere_effective') }})  
   mode: single
   
 - id: 'ev_stop_charging_stable'
@@ -171,6 +178,11 @@
     - action: script.ev_charge_stop
       metadata: {}
       data: {}
+    - action: logbook.log
+      data:
+        name: IntelliCharge
+        message: >
+         Stoppet (decision={{ states('sensor.ev_charge_decision') }})  
   mode: single
   
 - id: 'ev_control_reduced_ac_charging'
@@ -329,4 +341,103 @@
         entity_id: input_datetime.ev_session_ready_by
       data:
         datetime: "{{ states('input_datetime.ev_planned_ready_by') }}"
+  mode: single
+
+- id: 'intellicharge_acquire_ev_override'
+  alias: IntelliCharge - Acquire EV Override
+  description: EV overtager IntelliCharge kun når negativ pris + aktiv ladning kræver det
+  triggers:
+    - trigger: state
+      entity_id:
+        - binary_sensor.ev_should_force_intellicharge_allow
+      to: 'on'
+      for:
+        seconds: 30
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.intellicharge_overridden_by_ev
+      state: 'off'
+
+    - condition: state
+      entity_id: sensor.ev_intellicharge_smart_status_2
+      state:
+        - Smart
+        - Allow Always
+
+  actions:
+    - action: input_select.select_option
+      target:
+        entity_id: input_select.intellicharge_pre_ev_mode
+      data:
+        option: "{{ states('sensor.ev_intellicharge_smart_status_2') }}"
+
+    - action: logbook.log
+      data:
+        name: IntelliCharge
+        message: >
+          Sat til {{ states('sensor.ev_intellicharge_smart_status_2') }}    
+
+    - action: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.intellicharge_overridden_by_ev
+
+    - action: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.intellicharge_override_started_at
+      data:
+        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+    - if:
+        - condition: not
+          conditions:
+            - condition: state
+              entity_id: sensor.ev_intellicharge_smart_status_2
+              state: 'Allow Always'
+      then:
+        - action: script.intellicharge_apply_allow
+
+  mode: single  
+
+- id: 'intellicharge_release_ev_override'
+  alias: IntelliCharge - Release EV Override
+  description: Gendan kun IntelliCharge hvis EV tidligere har overtaget den
+  triggers:
+    - trigger: state
+      entity_id:
+        - binary_sensor.ev_should_force_intellicharge_allow
+      to: 'off'
+      for:
+        minutes: 2
+
+    - trigger: state
+      entity_id:
+        - input_select.ev_charge_mode
+      to: 'Stop'
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.intellicharge_overridden_by_ev
+      state: 'on'
+
+  actions:
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: input_select.intellicharge_pre_ev_mode
+              state: 'Smart'
+          sequence:
+            - action: script.intellicharge_apply_smart
+
+        - conditions:
+            - condition: state
+              entity_id: input_select.intellicharge_pre_ev_mode
+              state: 'Allow Always'
+          sequence:
+            - action: script.intellicharge_apply_allow
+
+    - action: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.intellicharge_overridden_by_ev
+
   mode: single

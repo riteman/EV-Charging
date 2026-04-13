@@ -1,6 +1,8 @@
 # Loads default set of integrations. Do not remove.
 default_config:
 
+logbook:
+
 utility_meter:
   ev_solar_energy_to_car_estimate_today:
     source: sensor.ev_solar_energy_to_car_estimate
@@ -46,24 +48,36 @@ input_select:
     options:
       - Smart
       - Allow Always
-    initial: Smart    
+    initial: Smart
+
+  intellicharge_pre_ev_mode:
+    name: IntelliCharge Pre-EV Mode
+    options:
+      - Smart
+      - Allow Always
 
 input_boolean:
   ev_ha_control_enabled:
     name: EV HA Control Enabled
+    icon: mdi:robot
     
   ev_guest_target_100:
     name: Lad til 100%
 
   ev_session_active:
     name: EV Session Active
+    icon: mdi:car-electric
     
   ev_simulation_mode:
     name: EV Simulation Mode
+    icon: mdi:test-tube
 
   intellicharge_smart_enabled:
     name: IntelliCharge Smart Enabled
-    icon: mdi:solar-power 
+    icon: mdi:solar-power
+
+  intellicharge_overridden_by_ev:
+    name: IntelliCharge overridden by EV
 
 input_datetime:
   ev_planned_ready_by:
@@ -75,6 +89,11 @@ input_datetime:
     name: EV Session Ready By
     has_date: true
     has_time: true
+
+  intellicharge_override_started_at:
+    name: IntelliCharge Override Started At
+    has_date: true
+    has_time: true  
 
 input_number:
   ev_guest_planned_start_soc:
@@ -191,6 +210,38 @@ sensor:
       
 template:
     - sensor:    
+
+      - name: "IntelliCharge Smart Sync Status"
+        unique_id: intellicharge_smart_sync_status_text
+        state: >
+          {% set actual = states('sensor.ev_intellicharge_smart_status_2') | trim %}
+          {% set desired = states('input_select.intellicharge_desired_mode') | trim %}
+
+          {% if actual in ['unknown', 'unavailable', '', 'none', 'Ukendt']
+                or desired in ['unknown', 'unavailable', '', 'none'] %}
+            Initialiserer
+          {% elif actual == desired %}
+            Synkroniseret
+          {% else %}
+            Ikke synkroniseret
+          {% endif %}
+        icon: >
+          {% set actual = states('sensor.ev_intellicharge_smart_status_2') | trim %}
+          {% set desired = states('input_select.intellicharge_desired_mode') | trim %}
+          {% if actual in ['unknown', 'unavailable', '', 'none', 'Ukendt']
+                or desired in ['unknown', 'unavailable', '', 'none'] %}
+            mdi:clock-outline
+          {% elif actual == desired %}
+            mdi:check-circle
+          {% else %}
+            mdi:alert-circle
+          {% endif %}
+        attributes:
+          actual: >
+            {{ states('sensor.ev_intellicharge_smart_status_2') }}
+          desired: >
+            {{ states('input_select.intellicharge_desired_mode') }}  
+
       - name: "EV Solar Power to Car"
         unique_id: ev_solar_power_to_car
         device_class: power
@@ -1421,10 +1472,10 @@ template:
         device_class: timestamp
         state: >
           {% set ts = states('sensor.intellicharge_api_auth') %}
-          {% if ts in ['unknown', 'unavailable', 'FEJL', '', 'none'] %}
-            {{ now().isoformat() }}
+          {% if ts not in ['unknown', 'unavailable', '', 'none'] %}
+            {{ ts }}
           {% else %}
-            {{ as_datetime(ts).isoformat() }}
+            {{ none }}
           {% endif %}
 
       - name: "IntelliCharge Token Age Hours"
@@ -1432,11 +1483,13 @@ template:
         unit_of_measurement: "h"
         state: >
           {% set ts = states('sensor.intellicharge_api_auth') %}
-          {% if ts in ['unknown', 'unavailable', 'FEJL', '', 'none'] %}
-            999
-          {% else %}
+          {% if ts not in ['unknown', 'unavailable', '', 'none'] %}
             {{ ((as_timestamp(now()) - as_timestamp(ts)) / 3600) | round(2) }}
-          {% endif %}          
+          {% else %}
+            {{ none }}
+          {% endif %}      
+
+        
  # -----------------------------------------------------------------------------
 
     - binary_sensor:
@@ -1465,15 +1518,61 @@ template:
         state: >
           {{ states('sensor.nordpool_kwh_dk1_dkk_3_10_025') | float(0) >= 0 }}
           
-      - name: "Easee Token Stale"
-        unique_id: easee_token_stale
+      - name: "IntelliCharge Token Stale"
+        unique_id: intellicharge_token_stale
         state: >
-          {% set age = states('sensor.easee_token_age_hours') | float(0) %}
-          {{ age > 24 }}    
+          {% set age = states('sensor.intellicharge_token_age_hours') | float(0) %}
+          {{ age > 20 }} 
 
+      
       - name: "IntelliCharge Smart Sync Error"
+        unique_id: intellicharge_smart_sync_error
         state: >
-          {{ states('sensor.ev_intellicharge_smart_status_2') != states('input_select.intellicharge_desired_mode') }}         
+          {% set actual = states('sensor.ev_intellicharge_smart_status_2') %}
+          {% set desired = states('input_select.intellicharge_desired_mode') %}
+          {% if actual in ['unknown', 'unavailable', '', 'none'] or desired in ['unknown', 'unavailable', '', 'none'] %}
+            false
+          {% else %}
+            {{ actual != desired }}
+          {% endif %} 
+
+
+      - name: "EV Should Force IntelliCharge Allow"
+        unique_id: ev_should_force_intellicharge_allow
+        state: >
+          {% set mode = states('input_select.ev_charge_mode') %}
+          {% set decision = states('sensor.ev_charge_decision') %}
+          {% set price = states('sensor.electricity_price_now_real') | float(999) %}
+          {% set cable = is_state('binary_sensor.charging_cable_connected', 'on') %}
+          {% set session = is_state('input_boolean.ev_session_active', 'on') %}
+          {% set ha = is_state('input_boolean.ev_ha_control_enabled', 'on') %}
+
+          {{
+            ha
+            and session
+            and cable
+            and mode in ['Auto', 'Charge Now', 'Monta Guest']
+            and decision == 'LAD'
+            and price < 0
+          }}    
+
+      - name: "EV Ampere Update Allowed"
+        unique_id: ev_ampere_update_allowed
+        state: >
+          {% set mode = states('input_select.ev_charge_mode') %}
+          {% set cable = is_state('binary_sensor.charging_cable_connected', 'on') %}
+          {% set session = is_state('input_boolean.ev_session_active', 'on') %}
+          {% set ha = is_state('input_boolean.ev_ha_control_enabled', 'on') %}
+          {% set target = states('sensor.ev_target_ampere_effective') | int(0) %}
+
+          {{
+            ha
+            and session
+            and cable
+            and mode in ['Auto', 'Charge Now', 'Monta Guest']
+            and target > 0
+          }}  
+    
 
 # 2. Kommandoen der styrer ampere 
 rest_command:
@@ -1539,9 +1638,9 @@ rest:
         unique_id: intellicharge_api_auth
         value_template: >
           {% if value_json is defined and value_json.access_token is defined %}
-            {{ now().strftime('%Y-%m-%d %H:%M:%S') }}
+            {{ now().isoformat() }}
           {% else %}
-            FEJL
+            {{ none }}
           {% endif %}
         json_attributes:
           - access_token
