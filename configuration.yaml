@@ -1289,6 +1289,63 @@ template:
           eta_worst_case: >
             {{ states('sensor.ev_eta_if_solar_stops_now') }}
 
+      - name: "EV Selected Slots Real"
+        unique_id: ev_selected_slots_real
+        state: >
+          {% set prices = (state_attr('sensor.stromligning_current_price_vat', 'prices') or [])
+            + (state_attr('binary_sensor.stromligning_tomorrow_available_vat', 'prices') or []) %}
+          {% set need = states('sensor.ev_remaining_hours_needed') | float(0) %}
+          {% set session_ready = states('input_datetime.ev_session_ready_by') %}
+          {% set planned_ready = states('input_datetime.ev_planned_ready_by') %}
+
+          {% set ready = session_ready %}
+          {% if ready in ['unknown', 'unavailable', ''] or as_timestamp(ready) <= as_timestamp(now()) %}
+            {% set ready = planned_ready %}
+          {% endif %}
+
+          {% if need <= 0 or ready in ['unknown', 'unavailable', ''] %}
+            -
+          {% else %}
+            {% set now_ts = as_timestamp(now()) %}
+            {% set ready_ts = as_timestamp(ready) %}
+            {% set ns = namespace(candidates=[], remaining=need, selected=[]) %}
+
+            {% for item in prices %}
+              {% set start_ts = as_timestamp(item.start) %}
+              {% set end_ts = start_ts + 3600 %}
+              {% set overlap_start = [start_ts, now_ts] | max %}
+              {% set overlap_end = [end_ts, ready_ts] | min %}
+              {% set overlap = (overlap_end - overlap_start) / 3600 %}
+
+              {% if overlap > 0 %}
+                {% set ns.candidates = ns.candidates + [(item.price | float(999), overlap_start, overlap)] %}
+              {% endif %}
+            {% endfor %}
+
+            {% set sorted_candidates = ns.candidates | sort %}
+
+            {% for price, slot_start_ts, avail in sorted_candidates %}
+              {% if ns.remaining > 0 %}
+                {% set used = [avail, ns.remaining] | min %}
+                {% set ns.remaining = ns.remaining - used %}
+                {% set ns.selected = ns.selected + [(slot_start_ts, used, price)] %}
+              {% endif %}
+            {% endfor %}
+
+            {% set selected_sorted = ns.selected | sort(attribute=0) %}
+            {% set ns2 = namespace(out=[]) %}
+
+            {% for slot_start_ts, used, price in selected_sorted %}
+              {% set used_min = (used * 60) | round(0) | int %}
+              {% set start_txt = slot_start_ts | timestamp_custom('%H:%M', true) %}
+              {% set ns2.out = ns2.out + [
+                start_txt ~ ' (' ~ used_min ~ ' min @ ' ~ (price | round(5)) ~ ')'
+              ] %}
+            {% endfor %}
+
+            {{ ns2.out | join(', ') if ns2.out | count > 0 else '-' }}
+          {% endif %}      
+
       - name: "EV Missing Requirements"
         unique_id: ev_missing_requirements
         state: >
