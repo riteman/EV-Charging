@@ -1422,28 +1422,68 @@ template:
           {% set ready = is_state('binary_sensor.ev_ready_to_charge', 'on') %}
           {% set decision = states('sensor.ev_charge_decision') %}
           {% set remaining = states('sensor.ev_remaining_energy_live_kwh') %}
-          {% set ready_by = states('input_datetime.ev_session_ready_by') %}
-          {% set ready_by_known = ready_by not in ['unknown', 'unavailable', '', 'none'] %}
-          {% set ready_by_future = ready_by_known and as_timestamp(ready_by) > as_timestamp(now()) %}
           {% set next_slot = states('sensor.ev_next_selected_slot_start') %}
 
           {% if mode == 'Stop' %}
             Stop valgt
+
           {% elif remaining not in ['unknown', 'unavailable', '', 'none'] and (remaining | float(0) <= 0) %}
             Færdig
-          {% elif not ready_by_known %}
-            Ready By mangler
-          {% elif not ready_by_future %}
-            Ready By i fortiden
+
           {% elif not ready %}
-            Ikke klar
+            Mangler – tryk for detaljer
+
           {% elif decision == 'LAD' %}
             Lader nu
+
           {% elif next_slot not in ['unknown', 'unavailable', '', 'none'] %}
             Klar - venter på slot kl {{ next_slot }}
+
           {% else %}
             Klar
-          {% endif %} 
+          {% endif %}
+
+        icon: >
+          {% set s = states('sensor.ev_operational_status') %}
+          {% if s == 'Lader nu' %}
+            mdi:ev-station
+          {% elif 'Klar - venter på slot' in s %}
+            mdi:clock-outline
+          {% elif s == 'Færdig' %}
+            mdi:check-circle
+          {% elif 'Mangler' in s %}
+            mdi:alert-circle
+          {% elif s == 'Stop valgt' %}
+            mdi:stop-circle
+          {% else %}
+            mdi:car-electric
+          {% endif %}
+
+        attributes:
+          problem: >
+            {% set m = states('sensor.ev_missing_requirements') %}
+            {% if m == 'OK' %}
+              Ingen problemer – systemet er klar
+            {% else %}
+              {{ m }}
+            {% endif %}
+
+          explanation: >
+            {% set m = states('sensor.ev_missing_requirements') %}
+            {% if m == 'OK' %}
+              Systemet er korrekt konfigureret og venter kun på planlagte slots.
+            {% else %}
+              Følgende forhindrer opladning:
+              {{ m }}
+            {% endif %}
+
+          next_slot: "{{ states('sensor.ev_next_selected_slot_start') }}"
+          decision: "{{ states('sensor.ev_charge_decision') }}"
+          mode: "{{ states('input_select.ev_charge_mode') }}"
+          ready_to_charge: "{{ states('binary_sensor.ev_ready_to_charge') }}"
+          remaining_kwh: "{{ states('sensor.ev_remaining_energy_live_kwh') }}"
+          target_ampere: "{{ states('sensor.ev_target_ampere_effective') }}"
+          intellicharge: "{{ states('sensor.ev_intellicharge_smart_status_2') }}"
           
     - !include templates/ev_debug.yaml   
           
