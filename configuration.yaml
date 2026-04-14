@@ -186,6 +186,12 @@ input_number:
     initial: 10
     mode: box  
 
+  ev_last_sent_ampere:
+    name: EV Last Sent Ampere
+    min: 0
+    max: 32
+    step: 1  
+
 sensor:
   - platform: rest
     name: "Shelly Grid Power Raw"
@@ -530,76 +536,31 @@ template:
               {{ ns.total_cost | round(3) }}
             {% endif %}
 
-      - name: "EV Selected Slots Real"
-        unique_id: ev_selected_slots_real
+      - name: "EV Next Selected Slot Start"
+        unique_id: ev_next_selected_slot_start
         state: >
-          {% set prices = (state_attr('sensor.stromligning_current_price_vat', 'prices') or [])
-            + (state_attr('binary_sensor.stromligning_tomorrow_available_vat', 'prices') or []) %}
-          {% set need = states('sensor.ev_remaining_hours_needed') | float(0) %}
-          {% set session_ready = states('input_datetime.ev_session_ready_by') %}
-          {% set planned_ready = states('input_datetime.ev_planned_ready_by') %}
-
-          {% set ready = session_ready %}
-          {% if ready in ['unknown', 'unavailable', ''] or as_timestamp(ready) <= as_timestamp(now()) %}
-            {% set ready = planned_ready %}
-          {% endif %}
-
-          {% if need <= 0 or ready in ['unknown', 'unavailable', ''] %}
-            -
+          {% set s = states('sensor.ev_selected_slots_real') %}
+          {% if s in ['unknown', 'unavailable', '', 'none', '-'] %}
+            {{ none }}
           {% else %}
-            {% set now_ts = as_timestamp(now()) %}
-            {% set ready_ts = as_timestamp(ready) %}
-            {% set ns = namespace(candidates=[], remaining=need, selected=[]) %}
-
-            {# Kandidater: pris først, derefter reel starttid, derefter overlap #}
-            {% for item in prices %}
-              {% set start_ts = as_timestamp(item.start) %}
-              {% set end_ts = start_ts + 3600 %}
-              {% set overlap_start = [start_ts, now_ts] | max %}
-              {% set overlap_end = [end_ts, ready_ts] | min %}
-              {% set overlap = (overlap_end - overlap_start) / 3600 %}
-
-              {% if overlap > 0 %}
-                {% set ns.candidates = ns.candidates + [(item.price | float(999), overlap_start, overlap)] %}
-              {% endif %}
-            {% endfor %}
-
-            {% set sorted_candidates = ns.candidates | sort %}
-
-            {# Vælg billigste slots indtil behovet er dækket #}
-            {% for price, slot_start_ts, avail in sorted_candidates %}
-              {% if ns.remaining > 0 %}
-                {% set used = [avail, ns.remaining] | min %}
-                {% set ns.remaining = ns.remaining - used %}
-                {% set ns.selected = ns.selected + [(slot_start_ts, used, price)] %}
-              {% endif %}
-            {% endfor %}
-
-            {# Sortér valgte slots kronologisk til visning #}
-            {% set selected_sorted = ns.selected | sort(attribute=0) %}
-            {% set ns2 = namespace(out=[]) %}
-
-            {% for slot_start_ts, used, price in selected_sorted %}
-              {% set used_min = (used * 60) | round(0) | int %}
-              {% set start_txt = slot_start_ts | timestamp_custom('%H:%M', true) %}
-              {% set ns2.out = ns2.out + [
-                start_txt ~ ' (' ~ used_min ~ ' min @ ' ~ (price | round(5)) ~ ')'
-              ] %}
-            {% endfor %}
-
-            {{ ns2.out | join(', ') if ns2.out | count > 0 else '-' }}
+            {% set first = s.split(',')[0] | trim %}
+            {% if ' (' in first %}
+              {{ first.split(' (')[0] | trim }}
+            {% else %}
+              {{ none }}
+            {% endif %}
           {% endif %}
           
       - name: "EV Price Delta Real"
         unique_id: ev_price_delta_real
         unit_of_measurement: "DKK/kWh"
         state: >
-          {% set v = states('sensor.ev_virtual_day_price_real') | float(999) %}
-          {% set r = states('sensor.ev_night_reference_price_real') | float(999) %}
-          {% if v == 999 or r == 999 %}
-            {{ 'unavailable' }}
+          {% set v = states('sensor.ev_virtual_day_price_real') %}
+          {% set r = states('sensor.ev_night_reference_price_real') %}
+          {% if is_number(v) and is_number(r) %}
+            {{ (v | float - r | float) | round(3) }}
           {% else %}
-            {{ (v - r) | round(3) }}
+            {{ none }}
           {% endif %}
           
       - name: "EV Charge Decision"
@@ -1051,38 +1012,6 @@ template:
           session={{ states('input_datetime.ev_session_ready_by') }},
           hours={{ states('sensor.ev_hours_until_ready') }} 
           
-      - name: "EV Remaining Energy Live kWh"
-        unique_id: ev_remaining_energy_live_kwh
-        unit_of_measurement: "kWh"
-        device_class: energy
-        state: >
-          {% set mode = states('input_select.ev_charge_mode') %}
-          {% set required = states('sensor.ev_remaining_energy_kwh') | float(0) %}
-          {% set session_energy = states('sensor.eh45khwp_session_energy') | float(0) %}
-
-          {% if mode == 'Monta Guest' %}
-            {{ [required - session_energy, 0] | max | round(2) }}
-          {% else %}
-            {{ required | round(2) }}
-          {% endif %}
-
-        attributes:
-          mode: >
-            {{ states('input_select.ev_charge_mode') }}
-
-          required_kwh: >
-            {{ states('sensor.ev_remaining_energy_kwh') | float(0) | round(2) }}
-
-          session_energy_kwh: >
-            {{ states('sensor.eh45khwp_session_energy') | float(0) | round(2) }}
-
-          source: >
-            {% if is_state('input_select.ev_charge_mode', 'Monta Guest') %}
-              guest_required_minus_session_energy
-            {% else %}
-              car_soc_based
-            {% endif %}
-
       - name: "EV Virtual Day Price Dynamic"
         unique_id: ev_virtual_day_price_dynamic
         unit_of_measurement: "DKK/kWh"
@@ -1359,6 +1288,105 @@ template:
 
           eta_worst_case: >
             {{ states('sensor.ev_eta_if_solar_stops_now') }}
+
+      - name: "EV Missing Requirements"
+        unique_id: ev_missing_requirements
+        state: >
+          {% set missing = [] %}
+          {% set mode = states('input_select.ev_charge_mode') %}
+          {% set ha = is_state('input_boolean.ev_ha_control_enabled', 'on') %}
+          {% set session = is_state('input_boolean.ev_session_active', 'on') %}
+          {% set cable = is_state('binary_sensor.charging_cable_connected', 'on') %}
+          {% set ready = states('input_datetime.ev_session_ready_by') %}
+          {% set ready_known = ready not in ['unknown', 'unavailable', '', 'none'] %}
+          {% set ready_future = ready_known and as_timestamp(ready) > as_timestamp(now()) %}
+          {% set remaining = states('sensor.ev_remaining_energy_live_kwh') %}
+          {% set remaining_known = remaining not in ['unknown', 'unavailable', '', 'none'] %}
+          {% set remaining_positive = remaining_known and (remaining | float(0) > 0) %}
+
+          {% if mode == 'Stop' %}
+            {% set missing = missing + ['Mode=Stop'] %}
+          {% endif %}
+          {% if not ha %}
+            {% set missing = missing + ['HA control er off'] %}
+          {% endif %}
+          {% if not session %}
+            {% set missing = missing + ['Session ikke aktiv'] %}
+          {% endif %}
+          {% if not cable %}
+            {% set missing = missing + ['Ladekabel ikke tilsluttet'] %}
+          {% endif %}
+          {% if not ready_known %}
+            {% set missing = missing + ['Ready By mangler'] %}
+          {% elif not ready_future %}
+            {% set missing = missing + ['Ready By er ikke i fremtiden'] %}
+          {% endif %}
+          {% if not remaining_known %}
+            {% set missing = missing + ['Restenergi ukendt'] %}
+          {% elif not remaining_positive %}
+            {% set missing = missing + ['Ingen restenergi'] %}
+          {% endif %}
+
+          {% if missing | count == 0 %}
+            OK
+          {% else %}
+            {{ missing | join(' · ') }}
+          {% endif %}
+
+        attributes:
+          mode: "{{ states('input_select.ev_charge_mode') }}"
+          ha_control: "{{ states('input_boolean.ev_ha_control_enabled') }}"
+          session_active: "{{ states('input_boolean.ev_session_active') }}"
+          cable_connected: "{{ states('binary_sensor.charging_cable_connected') }}"
+          ready_by: "{{ states('input_datetime.ev_session_ready_by') }}"
+          decision: "{{ states('sensor.ev_charge_decision') }}"
+          remaining_kwh: "{{ states('sensor.ev_remaining_energy_live_kwh') }}"
+          target_ampere: "{{ states('sensor.ev_target_ampere_effective') }}"
+
+      - name: "EV Next Selected Slot Start"
+        unique_id: ev_next_selected_slot_start
+        state: >
+          {% set s = states('sensor.ev_selected_slots_real') %}
+          {% if s in ['unknown', 'unavailable', '', 'none', '-'] %}
+            {{ none }}
+          {% else %}
+            {% set first = s.split(',')[0] | trim %}
+            {% if ' (' in first %}
+              {{ first.split(' (')[0] | trim }}
+            {% else %}
+              {{ none }}
+            {% endif %}
+          {% endif %}    
+
+      - name: "EV Operational Status"
+        unique_id: ev_operational_status
+        state: >
+          {% set mode = states('input_select.ev_charge_mode') %}
+          {% set ready = is_state('binary_sensor.ev_ready_to_charge', 'on') %}
+          {% set decision = states('sensor.ev_charge_decision') %}
+          {% set remaining = states('sensor.ev_remaining_energy_live_kwh') %}
+          {% set ready_by = states('input_datetime.ev_session_ready_by') %}
+          {% set ready_by_known = ready_by not in ['unknown', 'unavailable', '', 'none'] %}
+          {% set ready_by_future = ready_by_known and as_timestamp(ready_by) > as_timestamp(now()) %}
+          {% set next_slot = states('sensor.ev_next_selected_slot_start') %}
+
+          {% if mode == 'Stop' %}
+            Stop valgt
+          {% elif remaining not in ['unknown', 'unavailable', '', 'none'] and (remaining | float(0) <= 0) %}
+            Færdig
+          {% elif not ready_by_known %}
+            Ready By mangler
+          {% elif not ready_by_future %}
+            Ready By i fortiden
+          {% elif not ready %}
+            Ikke klar
+          {% elif decision == 'LAD' %}
+            Lader nu
+          {% elif next_slot not in ['unknown', 'unavailable', '', 'none'] %}
+            Klar - venter på slot kl {{ next_slot }}
+          {% else %}
+            Klar
+          {% endif %} 
           
     - !include templates/ev_debug.yaml   
           
@@ -1572,7 +1600,28 @@ template:
             and mode in ['Auto', 'Charge Now', 'Monta Guest']
             and target > 0
           }}  
-    
+          
+      - name: "EV Ready To Charge"
+        unique_id: ev_ready_to_charge
+        state: >
+          {% set mode = states('input_select.ev_charge_mode') %}
+          {% set ha = is_state('input_boolean.ev_ha_control_enabled', 'on') %}
+          {% set session = is_state('input_boolean.ev_session_active', 'on') %}
+          {% set cable = is_state('binary_sensor.charging_cable_connected', 'on') %}
+          {% set ready = states('input_datetime.ev_session_ready_by') %}
+          {% set ready_ok = ready not in ['unknown', 'unavailable', '', 'none']
+            and as_timestamp(ready) > as_timestamp(now()) %}
+          {% set remaining = states('sensor.ev_remaining_energy_live_kwh') %}
+          {% set remaining_ok = (remaining not in ['unknown', 'unavailable', '', 'none'])
+            and (remaining | float(0) > 0) %}
+          {{
+            mode != 'Stop'
+            and ha
+            and session
+            and cable
+            and ready_ok
+            and remaining_ok
+          }}
 
 # 2. Kommandoen der styrer ampere 
 rest_command:
@@ -1684,40 +1733,6 @@ rest:
           - enable_idle
           - enable_locked
 
-  - resource_template: "https://api.intellicharge.ai/api/v1/plant/3352"
-    method: GET
-    headers:
-      authorization: "Bearer {{ state_attr('sensor.intellicharge_api_auth', 'access_token') }}"
-      Accept: "application/json"
-    scan_interval: 300
-
-    sensor:
-      - name: "EV IntelliCharge Smart Status"
-        unique_id: ev_intellicharge_smart_status
-
-        value_template: >
-          {% if value_json.smart_0_export == 1 %}
-            Smart
-          {% elif value_json.smart_0_export == 0 %}
-            Allow Always
-          {% else %}
-            Ukendt
-          {% endif %}
-
-        icon: >
-          {% if value_json.smart_0_export == 1 %}
-            mdi:brain
-          {% else %}
-            mdi:flash
-          {% endif %}
-
-        json_attributes:
-          - smart_0_export
-          - allow_export_to_grid
-          - enable_buy_from_grid
-          - enable_sell_to_grid
-          - enable_idle
-          - enable_locked
-
+  
 
           

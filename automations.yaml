@@ -180,7 +180,7 @@
       data: {}
     - action: logbook.log
       data:
-        name: IntelliCharge
+        name: EV
         message: >
          Stoppet (decision={{ states('sensor.ev_charge_decision') }})  
   mode: single
@@ -343,6 +343,56 @@
         datetime: "{{ states('input_datetime.ev_planned_ready_by') }}"
   mode: single
 
+- id: 'ev_apply_target_ampere'
+  alias: EV - Apply target ampere
+  description: Sender beregnet ampere til Easee når målet ændrer sig og opladning er aktiv/relevant
+  triggers:
+    - trigger: state
+      entity_id:
+        - sensor.ev_target_ampere_effective
+      for:
+        minutes: 15
+
+    - trigger: state
+      entity_id:
+        - sensor.ev_charge_decision
+      to: 'LAD'
+      for:
+        minutes: 1
+
+    - trigger: state
+      entity_id:
+        - input_select.ev_charge_mode
+      to:
+        - Charge Now
+        - Auto
+        - Monta Guest
+      for:
+        seconds: 10
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_ha_control_enabled
+      state: 'on'
+
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+    - condition: state
+      entity_id: binary_sensor.charging_cable_connected
+      state: 'on'
+
+    - condition: template
+      value_template: >
+        {{ states('sensor.ev_charge_decision') == 'LAD'
+           or states('input_select.ev_charge_mode') == 'Charge Now' }}
+
+  actions:
+    - action: script.ev_set_target_ampere
+
+  mode: restart  
+
 - id: 'intellicharge_acquire_ev_override'
   alias: IntelliCharge - Acquire EV Override
   description: EV overtager IntelliCharge kun når negativ pris + aktiv ladning kræver det
@@ -372,11 +422,7 @@
       data:
         option: "{{ states('sensor.ev_intellicharge_smart_status_2') }}"
 
-    - action: logbook.log
-      data:
-        name: IntelliCharge
-        message: >
-          Sat til {{ states('sensor.ev_intellicharge_smart_status_2') }}    
+    
 
     - action: input_boolean.turn_on
       target:
@@ -396,6 +442,12 @@
               state: 'Allow Always'
       then:
         - action: script.intellicharge_apply_allow
+
+    - action: logbook.log
+      data:
+        name: IntelliCharge
+        message: >
+          Sat til {{ states('sensor.ev_intellicharge_smart_status_2') }}        
 
   mode: single  
 
@@ -439,5 +491,82 @@
     - action: input_boolean.turn_off
       target:
         entity_id: input_boolean.intellicharge_overridden_by_ev
+
+  mode: single
+
+- id: 'intellicharge_recover_after_restart'
+  alias: IntelliCharge - Recover after restart
+  description: Genskab eller frigiv EV override efter restart
+  triggers:
+    - trigger: homeassistant
+      event: start
+
+  conditions: []
+
+  actions:
+    - delay: "00:00:30"
+
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: input_boolean.intellicharge_overridden_by_ev
+              state: 'on'
+            - condition: state
+              entity_id: binary_sensor.ev_should_force_intellicharge_allow
+              state: 'on'
+          sequence:
+            - if:
+                - condition: not
+                  conditions:
+                    - condition: state
+                      entity_id: sensor.ev_intellicharge_smart_status_2
+                      state: 'Allow Always'
+              then:
+                - action: script.intellicharge_apply_allow
+
+                - action: logbook.log
+                  data:
+                    name: IntelliCharge
+                    message: >
+                      Recovery: beholdt/reetablerede Allow Always efter restart
+
+        - conditions:
+            - condition: state
+              entity_id: input_boolean.intellicharge_overridden_by_ev
+              state: 'on'
+            - condition: state
+              entity_id: binary_sensor.ev_should_force_intellicharge_allow
+              state: 'off'
+          sequence:
+            - choose:
+                - conditions:
+                    - condition: state
+                      entity_id: input_select.intellicharge_pre_ev_mode
+                      state: 'Smart'
+                  sequence:
+                    - action: script.intellicharge_apply_smart
+
+                    - action: logbook.log
+                      data:
+                        name: IntelliCharge
+                        message: >
+                          Recovery: gendannede Smart efter restart
+
+                - conditions:
+                    - condition: state
+                      entity_id: input_select.intellicharge_pre_ev_mode
+                      state: 'Allow Always'
+                  sequence:
+                    - action: script.intellicharge_apply_allow
+
+                    - action: logbook.log
+                      data:
+                        name: IntelliCharge
+                        message: >
+                          Recovery: gendannede Allow Always efter restart
+
+            - action: input_boolean.turn_off
+              target:
+                entity_id: input_boolean.intellicharge_overridden_by_ev
 
   mode: single

@@ -6,6 +6,10 @@ ev_charge_start:
     - service: switch.turn_on
       target:
         entity_id: switch.eh45khwp_charger_enabled
+    - action: logbook.log
+      data:
+        name: EV
+        message: "Lader aktiveret"    
 
 ev_charge_stop:
   alias: EV Charge Stop
@@ -15,6 +19,10 @@ ev_charge_stop:
     - service: switch.turn_off
       target:
         entity_id: switch.eh45khwp_charger_enabled
+    - action: logbook.log
+      data:
+        name: EV
+        message: "Lader stoppet"    
         
 ev_set_manual_ampere:
   alias: EV - Set manual ampere
@@ -23,6 +31,20 @@ ev_set_manual_ampere:
       data:
         ampere: "{{ states('input_number.ev_manual_ampere') | int(10) }}"
   mode: single
+
+ev_set_target_ampere:
+  alias: EV - Set target ampere
+  mode: single
+  sequence:
+    - action: rest_command.set_ioniq_ampere
+      data:
+        ampere: "{{ states('sensor.ev_target_ampere_effective') | int(6) }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_last_sent_ampere
+      data:
+        value: "{{ states('sensor.ev_target_ampere_effective') | int }}"  
 
 intellicharge_export_allow_always:
   alias: IntelliCharge Export Allow Always
