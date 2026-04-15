@@ -36,6 +36,21 @@ ev_set_target_ampere:
   alias: EV - Set target ampere
   mode: single
   sequence:
+    - if:
+        - condition: template
+          value_template: >
+            {{
+              state_attr('sensor.easee_api_access_token_final_2', 'accessToken') in [none, '']
+              or (states('sensor.easee_token_age_hours') not in ['unknown', 'unavailable', '', 'none']
+                  and states('sensor.easee_token_age_hours') | float(999) > 1.5)
+            }}
+      then:
+        - action: homeassistant.update_entity
+          target:
+            entity_id: sensor.easee_api_access_token_final_2
+
+        - delay: "00:00:03"
+
     - action: rest_command.set_ioniq_ampere
       data:
         ampere: "{{ states('sensor.ev_target_ampere_effective') | int(6) }}"
@@ -44,7 +59,14 @@ ev_set_target_ampere:
       target:
         entity_id: input_number.ev_last_sent_ampere
       data:
-        value: "{{ states('sensor.ev_target_ampere_effective') | int }}"  
+        value: "{{ states('sensor.ev_target_ampere_effective') | int }}"
+
+    - action: logbook.log
+      data:
+        name: EV
+        entity_id: switch.eh45khwp_charger_enabled
+        message: >
+          Ampere sat til {{ states('sensor.ev_target_ampere_effective') }} 
 
 intellicharge_export_allow_always:
   alias: IntelliCharge Export Allow Always
