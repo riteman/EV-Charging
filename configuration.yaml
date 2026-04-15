@@ -79,6 +79,9 @@ input_boolean:
   intellicharge_overridden_by_ev:
     name: IntelliCharge overridden by EV
 
+  ev_intellicharge_settling:
+   name: "EV IntelliCharge Settling (internal)"
+
 input_datetime:
   ev_planned_ready_by:
     name: EV Planned Ready By
@@ -94,6 +97,11 @@ input_datetime:
     name: IntelliCharge Override Started At
     has_date: true
     has_time: true  
+
+  ev_intellicharge_last_change:
+    name: "EV IntelliCharge Last Change (internal)"
+    has_date: true
+    has_time: true
 
 input_number:
   ev_guest_planned_start_soc:
@@ -216,37 +224,6 @@ sensor:
       
 template:
     - sensor:    
-
-      - name: "IntelliCharge Smart Sync Status"
-        unique_id: intellicharge_smart_sync_status_text
-        state: >
-          {% set actual = states('sensor.ev_intellicharge_smart_status_2') | trim %}
-          {% set desired = states('input_select.intellicharge_desired_mode') | trim %}
-
-          {% if actual in ['unknown', 'unavailable', '', 'none', 'Ukendt']
-                or desired in ['unknown', 'unavailable', '', 'none'] %}
-            Initialiserer
-          {% elif actual == desired %}
-            Synkroniseret
-          {% else %}
-            Ikke synkroniseret
-          {% endif %}
-        icon: >
-          {% set actual = states('sensor.ev_intellicharge_smart_status_2') | trim %}
-          {% set desired = states('input_select.intellicharge_desired_mode') | trim %}
-          {% if actual in ['unknown', 'unavailable', '', 'none', 'Ukendt']
-                or desired in ['unknown', 'unavailable', '', 'none'] %}
-            mdi:clock-outline
-          {% elif actual == desired %}
-            mdi:check-circle
-          {% else %}
-            mdi:alert-circle
-          {% endif %}
-        attributes:
-          actual: >
-            {{ states('sensor.ev_intellicharge_smart_status_2') }}
-          desired: >
-            {{ states('input_select.intellicharge_desired_mode') }}  
 
       - name: "EV Solar Power to Car"
         unique_id: ev_solar_power_to_car
@@ -609,7 +586,7 @@ template:
           reason: >
             {% set mode = states('input_select.ev_charge_mode') %}
             {% set enabled = is_state('input_boolean.ev_ha_control_enabled', 'on') %}
-            {% set override = is_state('input_boolean.ev_manual_override', 'on') %}
+            {% set override = false %} 
             {% set session = is_state('input_boolean.ev_session_active', 'on') %}
             {% set cable = is_state('binary_sensor.ev_cable_connected_effective', 'on') %}
             {% set delta = states('sensor.ev_price_delta_real') | float(999) %}
@@ -685,18 +662,24 @@ template:
         unique_id: ev_virtual_day_price_real
         unit_of_measurement: "DKK/kWh"
         state: >
-          {% set charger_power = [states('input_number.ev_charge_power_kw') | float(11), 0] | max %}
-          {% set raw = states('sensor.grid_export_power_average_2m_safe') | float(0) %}
+          {% set charger_power = states('input_number.ev_charge_power_kw') | float(11) %}
+          {% set settling = is_state('input_boolean.ev_intellicharge_settling', 'on') %}
           {% set price = states('sensor.stromligning_current_price_vat') | float(0) %}
+          {% set export_raw = states('sensor.grid_export_power_average_2m_safe') %}
+          {% set export_ok = export_raw not in ['unknown', 'unavailable', 'none', none, ''] %}
 
-          {% set export_kw = raw if raw > 0 else 0 %}
-          {% set free_kw = [export_kw, charger_power] | min %}
-          {% set net_kw = charger_power - free_kw %}
-
-          {% if charger_power > 0 %}
-            {{ (price * (net_kw / charger_power)) | round(3) }}
+          {% if settling or not export_ok %}
+            {{ price | round(3) }}
           {% else %}
-            0
+            {% set export_kw = export_raw | float(0) %}
+            {% set free_kw = [export_kw, charger_power] | min %}
+            {% set net_kw = charger_power - free_kw %}
+
+            {% if charger_power > 0 %}
+              {{ (price * (net_kw / charger_power)) | round(3) }}
+            {% else %}
+              0
+            {% endif %}
           {% endif %}
           
       - name: "Grid Export Power Average 2m Safe"
@@ -1619,51 +1602,66 @@ template:
 
           {{ ns2.out | join(', ') if ns2.out else 'Ingen' }}
           
-      - name: "Easee Token Last Refresh"
-        unique_id: easee_token_last_refresh
-        device_class: timestamp
+      - name: "Easee Auth Status"
+        unique_id: easee_auth_status
         state: >
-          {% set raw = states('sensor.easee_api_access_token_final_2') %}
-          {% if raw not in ['unknown','unavailable',''] %}
-            {% set dt = strptime(raw, '%Y-%m-%d %H:%M:%S') %}
-            {{ as_timestamp(dt) | timestamp_local }}
-          {% else %}
-            unknown
-          {% endif %}
-          
-      - name: "Easee Token Age Hours"
-        unique_id: easee_token_age_hours
-        unit_of_measurement: "h"
-        state: >
-          {% set raw = states('sensor.easee_api_access_token_final_2') %}
-          {% if raw not in ['unknown','unavailable',''] %}
-            {% set dt = strptime(raw, '%Y-%m-%d %H:%M:%S') %}
-            {{ ((as_timestamp(now()) - as_timestamp(dt)) / 3600) | round(1) }}
-          {% else %}
-            unknown
-          {% endif %}  
-
-      - name: "IntelliCharge Token Last Refresh"
-        unique_id: intellicharge_token_last_refresh
-        device_class: timestamp
-        state: >
-          {% set ts = states('sensor.intellicharge_api_auth') %}
+          {% set ts = states('sensor.easee_api_access_token_final_2') %}
           {% if ts not in ['unknown', 'unavailable', '', 'none'] %}
-            {{ ts }}
+            OK
           {% else %}
-            {{ none }}
+            Fejl
           {% endif %}
+        attributes:
+          last_refresh: >
+            {% set ts = states('sensor.easee_api_access_token_final_2') %}
+            {% if ts not in ['unknown', 'unavailable', '', 'none'] %}
+              {{ ts }}
+            {% else %}
+              {{ none }}
+            {% endif %}
+          age_hours: >
+            {% set ts = states('sensor.easee_api_access_token_final_2') %}
+            {% if ts not in ['unknown', 'unavailable', '', 'none'] %}
+              {{ ((as_timestamp(now()) - as_timestamp(ts)) / 3600) | round(2) }}
+            {% else %}
+              {{ none }}
+            {% endif %}
+          stale: >
+            {% set ts = states('sensor.easee_api_access_token_final_2') %}
+            {% if ts not in ['unknown', 'unavailable', '', 'none'] %}
+              {{ ((as_timestamp(now()) - as_timestamp(ts)) / 3600) > 1.5 }}
+            {% else %}
+              false
+            {% endif %}
+          has_token: >
+            {{ state_attr('sensor.easee_api_access_token_final_2', 'accessToken') not in [none, ''] }} 
 
-      - name: "IntelliCharge Token Age Hours"
-        unique_id: intellicharge_token_age_hours
-        unit_of_measurement: "h"
+      - name: "IntelliCharge Auth Status"
+        unique_id: intellicharge_auth_status
         state: >
-          {% set ts = states('sensor.intellicharge_api_auth') %}
-          {% if ts not in ['unknown', 'unavailable', '', 'none'] %}
-            {{ ((as_timestamp(now()) - as_timestamp(ts)) / 3600) | round(2) }}
+          {% set token = state_attr('sensor.intellicharge_api_auth', 'access_token') %}
+          {% if token not in [none, ''] %}
+            OK
           {% else %}
-            {{ none }}
-          {% endif %}      
+            Fejl
+          {% endif %}
+        icon: >
+          {% if state_attr('sensor.intellicharge_api_auth', 'access_token') not in [none, ''] %}
+            mdi:check-circle
+          {% else %}
+            mdi:alert-circle
+          {% endif %}
+        attributes:
+          has_token: >
+            {{ state_attr('sensor.intellicharge_api_auth', 'access_token') not in [none, ''] }}
+
+          token_preview: >
+            {% set t = state_attr('sensor.intellicharge_api_auth', 'access_token') %}
+            {% if t not in [none, ''] %}
+              {{ t[:10] ~ '...' }}
+            {% else %}
+              none
+            {% endif %}    
 
         
  # -----------------------------------------------------------------------------
@@ -1699,18 +1697,6 @@ template:
         state: >
           {% set age = states('sensor.intellicharge_token_age_hours') | float(0) %}
           {{ age > 20 }} 
-
-      
-      - name: "IntelliCharge Smart Sync Error"
-        unique_id: intellicharge_smart_sync_error
-        state: >
-          {% set actual = states('sensor.ev_intellicharge_smart_status_2') %}
-          {% set desired = states('input_select.intellicharge_desired_mode') %}
-          {% if actual in ['unknown', 'unavailable', '', 'none'] or desired in ['unknown', 'unavailable', '', 'none'] %}
-            false
-          {% else %}
-            {{ actual != desired }}
-          {% endif %} 
 
 
       - name: "EV Should Force IntelliCharge Allow"

@@ -570,3 +570,104 @@
                 entity_id: input_boolean.intellicharge_overridden_by_ev
 
   mode: single
+
+- id: ev_intellicharge_acquire
+  alias: EV - IntelliCharge Acquire
+  mode: single
+
+  trigger:
+    - platform: state
+      entity_id: binary_sensor.ev_intellicharge_override_needed
+      to: "on"
+      for: "00:01:00"
+
+  condition:
+    - condition: state
+      entity_id: input_boolean.ev_ha_control_enabled
+      state: "on"
+
+    - condition: template
+      value_template: >
+        {{ not is_state('sensor.ev_intellicharge_smart_status_2', 'Allow Always') }}
+
+  action:
+    - service: script.intellicharge_apply_allow
+
+    - service: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.ev_intellicharge_settling
+
+    - service: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_intellicharge_last_change
+      data:
+        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"  
+
+- id: ev_intellicharge_release
+  alias: EV - IntelliCharge Release
+  mode: single
+
+  trigger:
+    - platform: state
+      entity_id: binary_sensor.ev_intellicharge_override_needed
+      to: "off"
+      for: "00:03:00"
+
+  condition:
+    - condition: state
+      entity_id: input_boolean.ev_ha_control_enabled
+      state: "on"
+
+    - condition: template
+      value_template: >
+        {{ is_state('sensor.ev_intellicharge_smart_status_2', 'Allow Always') }}
+
+  action:
+    - service: script.intellicharge_apply_smart
+
+    - service: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.ev_intellicharge_settling
+
+    - service: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_intellicharge_last_change
+      data:
+        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+- id: ev_intellicharge_settling_clear
+  alias: EV - IntelliCharge Settling Clear
+  mode: restart
+
+  trigger:
+    - platform: state
+      entity_id: input_boolean.ev_intellicharge_settling
+      to: "on"
+
+  action:
+    - delay: "00:03:00"
+
+    - service: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.ev_intellicharge_settling
+
+- id: ev_ha_control_disabled_failsafe
+  alias: EV - HA Control Disabled Failsafe
+  mode: single
+
+  trigger:
+    - platform: state
+      entity_id: input_boolean.ev_ha_control_enabled
+      to: "off"
+
+  action:
+    - service: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.ev_intellicharge_settling
+
+    - if:
+        - condition: template
+          value_template: >
+            {{ is_state('sensor.ev_intellicharge_smart_status_2', 'Allow Always') }}
+      then:
+        - service: script.intellicharge_apply_smart

@@ -1,0 +1,15 @@
+Diverse arbejdsskridt:
+
+1 Search globally i VS:       Ctrl Shit F
+2 Search in file:             Ctrl F
+3 Fold ind:                   Ctrl K Ctrl 0/1/2
+4 Fold ud:                    Ctrl K Ctrl J
+5 Goto Line:                  Ctrl G
+6 Farvelagte kommentarer:     ! (kommentar), * (Advarsel), ? (check), TODO
+7 Synk til Github:            Gå til D:\"Onlime Sync"\"Onlime Synk"\HA-Git
+                              git add .
+                              git commit -m "opdateret beskrivelse"
+                              git push
+ 8 I Git                      Åben fil og klik på History for at se versionerne
+ 
+ 

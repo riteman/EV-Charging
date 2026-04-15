@@ -931,11 +931,38 @@ template:
         state: >
           {{ states('sensor.grid_export_power_average_2m') | float(0) | round(2) }}      
 
-
 # -----------------------------------------------------------------------------
         
 
   - binary_sensor:
+
+      - name: "EV IntelliCharge Override Needed"
+        unique_id: ev_intellicharge_override_needed
+        state: >
+          {% set ha_enabled =
+              is_state('input_boolean.ev_ha_control_enabled', 'on') %}
+          {% set auto_mode =
+              states('input_select.ev_charge_mode') in ['Auto', 'Charge Now', 'Monta Guest'] %}
+          {% set session_active =
+              is_state('input_boolean.ev_session_active', 'on') %}
+          {% set cable_connected =
+              is_state('binary_sensor.charging_cable_connected', 'on') %}
+          {% set is_day =
+              is_state('sun.sun', 'above_horizon') %}
+          {% set export_positive =
+              is_state('binary_sensor.ev_export_price_positive', 'on') %}
+          {% set needs_energy =
+              states('sensor.ev_energy_needed_kwh') | float(0) > 0.2 %}
+          {{
+            ha_enabled
+            and auto_mode
+            and session_active
+            and cable_connected
+            and is_day
+            and not export_positive
+            and needs_energy
+          }}
+
       - name: "EV Deadline Risk"
         unique_id: ev_deadline_risk
         state: >
