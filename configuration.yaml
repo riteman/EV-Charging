@@ -82,6 +82,9 @@ input_boolean:
   ev_intellicharge_settling:
    name: "EV IntelliCharge Settling (internal)"
 
+  ev_start_delay_active:
+    name: EV Start Delay Active 
+
 input_datetime:
   ev_planned_ready_by:
     name: EV Planned Ready By
@@ -1651,7 +1654,12 @@ template:
               {{ t[:10] ~ '...' }}
             {% else %}
               none
-            {% endif %}    
+            {% endif %}  
+
+      - name: "EV Charging Actual"
+        unique_id: ev_charging_actual
+        state: >
+          {{ states('sensor.eh45khwp_power') | float(0) > 100 }}     
 
         
  # -----------------------------------------------------------------------------

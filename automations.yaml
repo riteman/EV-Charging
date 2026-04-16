@@ -118,32 +118,78 @@
       entity_id:
         - sensor.ev_charge_decision
       to: 'LAD'
-      for:
-        hours: 0
-        minutes: 5
-        seconds: 0
+
   conditions:
     - condition: state
       entity_id: input_boolean.ev_ha_control_enabled
       state: 'on'
+
     - condition: state
       entity_id: input_boolean.ev_session_active
       state: 'on'
+
     - condition: state
-      entity_id: binary_sensor.charging_cable_connected
-      state: 'on'  
+      entity_id: binary_sensor.ev_cable_connected_effective
+      state: 'on'
+
   actions:
+    - action: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.ev_start_delay_active
+
+    - delay: "00:02:00"
+
+    - condition: state
+      entity_id: sensor.ev_charge_decision
+      state: 'LAD'
+
+    - condition: state
+      entity_id: input_boolean.ev_ha_control_enabled
+      state: 'on'
+
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+    - condition: state
+      entity_id: binary_sensor.ev_cable_connected_effective
+      state: 'on'
+
     - action: script.ev_charge_start
       metadata: {}
       data: {}
+
+    - action: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.ev_start_delay_active
+
     - action: logbook.log
       data:
         name: EV
         message: >
           Startet (mode={{ states('input_select.ev_charge_mode') }},
           decision={{ states('sensor.ev_charge_decision') }},
-          amp={{ states('sensor.ev_target_ampere_effective') }})  
-  mode: single
+          amp={{ states('sensor.ev_target_ampere_effective') }})
+
+  mode: restart
+
+- id: ev_start_delay_off_when_not_lad
+  alias: EV - Start delay off when not LAD
+  triggers:
+    - trigger: state
+      entity_id: sensor.ev_charge_decision
+
+  conditions:
+    - condition: template
+      value_template: "{{ states('sensor.ev_charge_decision') != 'LAD' }}"
+
+  actions:
+    - action: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.ev_start_delay_active
+
+  mode: restart  
+
   
 - id: 'ev_stop_charging_stable'
   alias: EV - Stop charging stable
