@@ -201,29 +201,34 @@ input_number:
     step: 1  
 
 sensor:
-  - platform: rest
-    name: "Shelly Grid Power Raw"
-    resource: http://192.168.10.250/status
-    value_template: "{{ value_json.total_power | float(0) }}"
-    unit_of_measurement: "W"
-    scan_interval: 10
-
-  - platform: statistics
-    name: Grid Export Power Average 2m
-    entity_id: sensor.grid_export_power
-    state_characteristic: mean
-    max_age:
-      minutes: 2
+    - platform: statistics
+      name: Grid Export Power Average 2m
+      entity_id: sensor.grid_export_power
+      state_characteristic: mean
+      max_age:
+        minutes: 2
       
-  - platform: integration
-    source: sensor.ev_solar_power_to_car_estimate
-    name: EV Solar Energy To Car Estimate
-    unit_prefix: k
-    round: 2
-    method: trapezoidal
+    - platform: integration
+      source: sensor.ev_solar_power_to_car_estimate
+      name: EV Solar Energy To Car Estimate
+      unit_prefix: k
+      round: 2
+      method: trapezoidal
       
 template:
     - sensor:    
+
+      - name: "Shelly Grid Power Raw"
+        unique_id: shelly_grid_power_raw
+        unit_of_measurement: "W"
+        state: >
+          {{
+            (
+              states('sensor.shellyem3_483fdac37c06_phase_a_power') | float(0)
+              + states('sensor.shellyem3_483fdac37c06_phase_b_power') | float(0)
+              + states('sensor.shellyem3_483fdac37c06_phase_c_power') | float(0)
+            ) | round(2)
+          }}
 
       - name: "EV Solar Power to Car"
         unique_id: ev_solar_power_to_car
@@ -1458,21 +1463,6 @@ template:
           remaining_kwh: "{{ states('sensor.ev_remaining_energy_live_kwh') }}"
           target_ampere: "{{ states('sensor.ev_target_ampere_effective') }}"
 
-      - name: "EV Next Selected Slot Start"
-        unique_id: ev_next_selected_slot_start
-        state: >
-          {% set s = states('sensor.ev_selected_slots_real') %}
-          {% if s in ['unknown', 'unavailable', '', 'none', '-'] %}
-            {{ none }}
-          {% else %}
-            {% set first = s.split(',')[0] | trim %}
-            {% if ' (' in first %}
-              {{ first.split(' (')[0] | trim }}
-            {% else %}
-              {{ none }}
-            {% endif %}
-          {% endif %}    
-
       - name: "EV Operational Status"
         unique_id: ev_operational_status
         state: >
@@ -1838,7 +1828,7 @@ rest:
     headers:
       authorization: "Bearer {{ state_attr('sensor.intellicharge_api_auth', 'access_token') }}"
       Accept: "application/json"
-    scan_interval: 300
+    scan_interval: 21600
 
     sensor:
       - name: "EV IntelliCharge Smart Status"

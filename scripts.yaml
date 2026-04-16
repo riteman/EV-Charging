@@ -70,37 +70,141 @@ ev_set_target_ampere:
 
 intellicharge_export_allow_always:
   alias: IntelliCharge Export Allow Always
+  mode: single
   sequence:
+    - if:
+        - condition: template
+          value_template: >
+            {{ is_state('sensor.ev_intellicharge_smart_status_2', 'Allow Always') }}
+      then:
+        - stop: "IntelliCharge er allerede Allow Always"
+
     - service: rest_command.intellicharge_export_allow_always
+
+    - delay: "00:00:08"
+
+    - service: homeassistant.update_entity
+      target:
+        entity_id: sensor.ev_intellicharge_smart_status_2
+
     - service: input_boolean.turn_off
       target:
         entity_id: input_boolean.intellicharge_smart_enabled
 
+    - service: input_select.select_option
+      target:
+        entity_id: input_select.intellicharge_desired_mode
+      data:
+        option: "Allow Always"
+
+    - service: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_intellicharge_last_change
+      data:
+        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
 intellicharge_export_smart:
   alias: IntelliCharge Export Smart
+  mode: single
   sequence:
+    - if:
+        - condition: template
+          value_template: >
+            {{ is_state('sensor.ev_intellicharge_smart_status_2', 'Smart') }}
+      then:
+        - stop: "IntelliCharge er allerede Smart"
+
     - service: rest_command.intellicharge_export_smart
+
+    - delay: "00:00:08"
+
+    - service: homeassistant.update_entity
+      target:
+        entity_id: sensor.ev_intellicharge_smart_status_2
+
     - service: input_boolean.turn_on
       target:
         entity_id: input_boolean.intellicharge_smart_enabled
 
-intellicharge_apply_smart:
-  alias: IntelliCharge → Smart
-  sequence:
-    - service: rest_command.intellicharge_set_smart
     - service: input_select.select_option
       target:
         entity_id: input_select.intellicharge_desired_mode
       data:
         option: "Smart"
 
+    - service: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_intellicharge_last_change
+      data:
+        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
 
-intellicharge_apply_allow:
-  alias: IntelliCharge → Allow Always
+intellicharge_apply_smart:
+  alias: IntelliCharge → Smart
+  mode: single
   sequence:
-    - service: rest_command.intellicharge_set_allow_always
+    - if:
+        - condition: template
+          value_template: >
+            {{ is_state('sensor.ev_intellicharge_smart_status_2', 'Smart') }}
+      then:
+        - stop: "IntelliCharge er allerede Smart"
+
+    - service: rest_command.intellicharge_set_smart
+
+    - delay: "00:00:08"
+
+    - service: homeassistant.update_entity
+      target:
+        entity_id: sensor.ev_intellicharge_smart_status_2
+
+    - service: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.intellicharge_smart_enabled
+
     - service: input_select.select_option
       target:
         entity_id: input_select.intellicharge_desired_mode
       data:
-        option: "Allow Always"          
+        option: "Smart"
+
+    - service: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_intellicharge_last_change
+      data:
+        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+
+intellicharge_apply_allow:
+  alias: IntelliCharge → Allow Always
+  mode: single
+  sequence:
+    - if:
+        - condition: template
+          value_template: >
+            {{ is_state('sensor.ev_intellicharge_smart_status_2', 'Allow Always') }}
+      then:
+        - stop: "IntelliCharge er allerede Allow Always"
+
+    - service: rest_command.intellicharge_set_allow_always
+
+    - delay: "00:00:08"
+
+    - service: homeassistant.update_entity
+      target:
+        entity_id: sensor.ev_intellicharge_smart_status_2
+
+    - service: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.intellicharge_smart_enabled
+
+    - service: input_select.select_option
+      target:
+        entity_id: input_select.intellicharge_desired_mode
+      data:
+        option: "Allow Always"
+
+    - service: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_intellicharge_last_change
+      data:
+        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
