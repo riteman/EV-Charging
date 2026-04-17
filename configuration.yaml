@@ -815,32 +815,31 @@ template:
             {% set ready_ts = as_timestamp(ready) %}
             {% set ns = namespace(candidates=[], remaining=need, selected=[], merged=[], out=[]) %}
 
-            {# Byg kandidater med reel overlap mod nu/deadline #}
+            {# Byg kandidater: behold ægte slot-start/-slut, men beregn brugbar overlap separat #}
             {% for item in prices %}
-              {% set start_ts = as_timestamp(item.start) %}
-              {% set end_ts = start_ts + 3600 %}
-              {% set overlap_start = [start_ts, now_ts] | max %}
-              {% set overlap_end = [end_ts, ready_ts] | min %}
-              {% set overlap = (overlap_end - overlap_start) / 3600 %}
+              {% set slot_start = as_timestamp(item.start) %}
+              {% set slot_end = slot_start + 3600 %}
+              {% set usable_start = [slot_start, now_ts] | max %}
+              {% set usable_end = [slot_end, ready_ts] | min %}
+              {% set usable_hours = (usable_end - usable_start) / 3600 %}
 
-              {% if overlap > 0 %}
-                {% set ns.candidates = ns.candidates + [(item.price | float(999), overlap_start, overlap)] %}
+              {% if usable_hours > 0 %}
+                {% set ns.candidates = ns.candidates + [(item.price | float(999), slot_start, slot_end, usable_hours)] %}
               {% endif %}
             {% endfor %}
 
-            {# Vælg billigste slots først #}
+            {# Vælg billigste slots først, men behold slot-grænserne stabile #}
             {% set sorted_candidates = ns.candidates | sort %}
 
-            {% for price, start_ts, avail in sorted_candidates %}
+            {% for price, slot_start, slot_end, usable_hours in sorted_candidates %}
               {% if ns.remaining > 0 %}
-                {% set used = [avail, ns.remaining] | min %}
-                {% set end_ts = start_ts + (used * 3600) %}
+                {% set used = [usable_hours, ns.remaining] | min %}
                 {% set ns.remaining = ns.remaining - used %}
-                {% set ns.selected = ns.selected + [(start_ts, end_ts)] %}
+                {% set ns.selected = ns.selected + [(slot_start, slot_end)] %}
               {% endif %}
             {% endfor %}
 
-            {# Sortér valgte slots kronologisk #}
+            {# Sortér kronologisk #}
             {% set selected_sorted = ns.selected | sort %}
 
             {# Merge sammenhængende vinduer #}
@@ -860,7 +859,7 @@ template:
               {% endif %}
             {% endfor %}
 
-            {# Formatér til tekst #}
+            {# Formatér stabilt som rigtige vinduer #}
             {% for start_ts, end_ts in ns.merged %}
               {% set start_txt = start_ts | timestamp_custom('%H:%M') %}
               {% set end_txt = end_ts | timestamp_custom('%H:%M') %}
@@ -873,28 +872,38 @@ template:
       - name: "EV Next Charge Window Real"
         unique_id: ev_next_charge_window_real
         state: >
-          {% set slots = states('sensor.ev_selected_slots_real') %}
+          {% set slots = states('sensor.ev_charge_windows_real') %}
 
           {% if slots in ['unknown', 'unavailable', '', '-'] %}
             -
           {% else %}
-            {% set first = slots.split(',')[0].strip() %}
+            {% set now_ts = as_timestamp(now()) %}
+            {% set ns = namespace(found='-') %}
 
-            {% if ' (' in first and ' min' in first %}
-              {% set start_txt = first.split(' (')[0] %}
-              {% set used_min = first.split('(')[1].split(' min')[0] | int(0) %}
+            {% for slot in slots.split(',') %}
+              {% set s = slot.strip() %}
 
-              {% set start_dt = today_at(start_txt ~ ':00') %}
-              {% if start_dt <= now() %}
-                {% set start_dt = start_dt + timedelta(days=1) %}
+              {% if '-' in s %}
+                {% set start_txt = s.split('-')[0].strip() %}
+                {% set end_txt = s.split('-')[1].strip() %}
+
+                {% set start_dt = today_at(start_txt ~ ':00') %}
+                {% set end_dt = today_at(end_txt ~ ':00') %}
+
+                {% if end_dt <= start_dt %}
+                  {% set end_dt = end_dt + timedelta(days=1) %}
+                {% endif %}
+
+                {% set start_ts = as_timestamp(start_dt) %}
+                {% set end_ts = as_timestamp(end_dt) %}
+
+                {% if end_ts > now_ts and ns.found == '-' %}
+                  {% set ns.found = start_dt.strftime('%H:%M') ~ '-' ~ end_dt.strftime('%H:%M') %}
+                {% endif %}
               {% endif %}
+            {% endfor %}
 
-              {% set end_dt = start_dt + timedelta(minutes=used_min) %}
-
-              {{ start_dt.strftime('%H:%M') ~ '-' ~ end_dt.strftime('%H:%M') }}
-            {% else %}
-              -
-            {% endif %}
+            {{ ns.found }}
           {% endif %}
           
       - name: "EV Target Ampere Raw"
@@ -1473,7 +1482,9 @@ template:
           {% set ready = is_state('binary_sensor.ev_ready_to_charge', 'on') %}
           {% set decision = states('sensor.ev_charge_decision') %}
           {% set remaining = states('sensor.ev_remaining_energy_live_kwh') %}
-          {% set next_slot = state_attr('sensor.ev_selected_slots_real', 'next_start') %}
+          {% set next_slot = states('sensor.ev_next_charge_window_real') %}
+          {% set charging = states('sensor.eh45khwp_power') | float(0) > 100 %}
+          {% set start_delay = is_state('input_boolean.ev_start_delay_active', 'on') %}
 
           {% if mode == 'Stop' %}
             Stop valgt
@@ -1481,10 +1492,14 @@ template:
             Færdig
           {% elif not ready %}
             Mangler – tryk for detaljer
-          {% elif decision == 'LAD' %}
+          {% elif charging %}
             Lader nu
-          {% elif next_slot not in [none, 'unknown', 'unavailable', '', 'none'] %}
-            Klar - venter på slot kl {{ next_slot }}
+          {% elif start_delay %}
+            Starter snart
+          {% elif decision == 'LAD' %}
+            Klar til opladning
+          {% elif next_slot not in ['unknown', 'unavailable', '', '-', 'none'] %}
+            Klar - venter på slot {{ next_slot }}
           {% else %}
             Klar
           {% endif %}
@@ -1497,6 +1512,7 @@ template:
             {% else %}
               {{ m }}
             {% endif %}
+
           explanation: >
             {% set m = states('sensor.ev_missing_requirements') %}
             {% if m == 'OK' %}
@@ -1504,13 +1520,16 @@ template:
             {% else %}
               Følgende forhindrer opladning: {{ m }}
             {% endif %}
-          next_slot: "{{ state_attr('sensor.ev_selected_slots_real', 'next_start') }}"
+
+          next_slot: "{{ states('sensor.ev_next_charge_window_real') }}"
           decision: "{{ states('sensor.ev_charge_decision') }}"
           mode: "{{ states('input_select.ev_charge_mode') }}"
           ready_to_charge: "{{ states('binary_sensor.ev_ready_to_charge') }}"
           remaining_kwh: "{{ states('sensor.ev_remaining_energy_live_kwh') }}"
           target_ampere: "{{ states('sensor.ev_target_ampere_effective') }}"
           intellicharge: "{{ states('sensor.ev_intellicharge_smart_status_2') }}"
+          actual_power_w: "{{ states('sensor.eh45khwp_power') }}"
+          start_delay_active: "{{ states('input_boolean.ev_start_delay_active') }}"
           
     - !include templates/ev_debug.yaml   
           
@@ -1519,11 +1538,15 @@ template:
         entity_id: sensor.ev_target_ampere_raw
         for: "00:05:00"
       sensor:
-      - name: "EV Target Ampere Stable"
-        unique_id: ev_target_ampere_stable
+      - name: "EV Target Ampere Effective"
+        unique_id: ev_target_ampere_effective
         unit_of_measurement: "A"
         state: >
-          {{ states('sensor.ev_target_ampere_raw') | int(16) }}
+          {% if is_state('input_select.ev_charge_mode', 'Charge Now') %}
+            {{ states('sensor.ev_target_ampere_raw') | int(0) }}
+          {% else %}
+            {{ states('sensor.ev_target_ampere_stable') | int(0) }}
+          {% endif %}
 
     - sensor:
       - name: "EV Target Ampere Effective"
