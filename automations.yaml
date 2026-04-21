@@ -117,64 +117,80 @@
     - trigger: state
       entity_id:
         - sensor.ev_charge_decision
+      to: 'LAD'
+      for:
+        minutes: 2
+    - trigger: state
+      entity_id:
+        - sensor.ev_target_ampere_effective
+    - trigger: state
+      entity_id:
         - input_boolean.ev_session_active
+      to: 'on'
+    - trigger: state
+      entity_id:
         - binary_sensor.ev_cable_connected_effective
+      to: 'on'
+    - trigger: state
+      entity_id:
         - input_boolean.ev_ha_control_enabled
+      to: 'on'
+    - trigger: state
+      entity_id:
         - input_select.ev_charge_mode
-
+    - trigger: homeassistant
+      event: start
   conditions:
-    - condition: state
-      entity_id: sensor.ev_charge_decision
-      state: 'LAD'
-
     - condition: state
       entity_id: input_boolean.ev_ha_control_enabled
       state: 'on'
-
     - condition: state
       entity_id: input_boolean.ev_session_active
       state: 'on'
-
     - condition: state
       entity_id: binary_sensor.ev_cable_connected_effective
       state: 'on'
-
+    - condition: state
+      entity_id: sensor.ev_charge_decision
+      state: 'LAD'
+    - condition: template
+      value_template: "{{ states('sensor.ev_target_ampere_effective') | int(0) >= 6 }}"
     - condition: numeric_state
       entity_id: sensor.eh45khwp_power
       below: 100
-
+    - condition: state
+      entity_id: switch.eh45khwp_charger_enabled
+      state: 'off'
   actions:
     - action: input_boolean.turn_on
       target:
         entity_id: input_boolean.ev_start_delay_active
-
     - delay: "00:02:00"
-
     - choose:
         - conditions:
             - condition: state
-              entity_id: sensor.ev_charge_decision
-              state: 'LAD'
-
-            - condition: state
               entity_id: input_boolean.ev_ha_control_enabled
               state: 'on'
-
             - condition: state
               entity_id: input_boolean.ev_session_active
               state: 'on'
-
             - condition: state
               entity_id: binary_sensor.ev_cable_connected_effective
               state: 'on'
-
+            - condition: state
+              entity_id: sensor.ev_charge_decision
+              state: 'LAD'
+            - condition: template
+              value_template: "{{ states('sensor.ev_target_ampere_effective') | int(0) >= 6 }}"
             - condition: numeric_state
               entity_id: sensor.eh45khwp_power
               below: 100
+            - condition: state
+              entity_id: switch.eh45khwp_charger_enabled
+              state: 'off'
           sequence:
             - action: script.ev_charge_start
               data: {}
-
             - action: logbook.log
               data:
                 name: EV
@@ -190,13 +206,12 @@
               Start annulleret efter delay
               (mode={{ states('input_select.ev_charge_mode') }},
               decision={{ states('sensor.ev_charge_decision') }},
+              amp={{ states('sensor.ev_target_ampere_effective') }},
               cable={{ states('binary_sensor.ev_cable_connected_effective') }},
               session={{ states('input_boolean.ev_session_active') }})
-
     - action: input_boolean.turn_off
       target:
         entity_id: input_boolean.ev_start_delay_active
-
   mode: restart
 
 - id: ev_start_delay_off_when_not_lad
@@ -259,50 +274,10 @@
   
 - id: 'ev_control_reduced_ac_charging'
   alias: EV - Control reduced AC charging
-  description: ''
-  triggers:
-    - trigger: state
-      entity_id:
-        - sensor.ev_charge_power_mode
-  conditions:
-    - condition: state
-      entity_id: input_boolean.ev_session_active
-      state: 'on'
-    - condition: state
-      entity_id: input_boolean.ev_ha_control_enabled
-      state: 'on'
-  actions:
-    - choose:
-        - conditions:
-            - condition: state
-              entity_id: sensor.ev_charge_power_mode
-              state: 'FULL'
-          sequence:
-            - action: switch.turn_off
-              metadata: {}
-              target:
-                entity_id: switch.reduced_ac_charging
-              data: {}
-
-        - conditions:
-            - condition: state
-              entity_id: sensor.ev_charge_power_mode
-              state: 'REDUCED'
-          sequence:
-            - action: switch.turn_on
-              metadata: {}
-              target:
-                entity_id: switch.reduced_ac_charging
-              data: {}
-
-        - conditions:
-            - condition: state
-              entity_id: sensor.ev_charge_power_mode
-              state: 'STOP'
-          sequence:
-            - action: script.ev_charge_stop
-              metadata: {}
-              data: {}
+  description: 'Obsolete legacy flow disabled because charger ampere is now controlled directly via Easee'
+  triggers: []
+  conditions: []
+  actions: []
   mode: single
   
 - id: 'ev_guest_target_sync'
@@ -396,6 +371,43 @@
                 entity_id: input_boolean.ev_ha_control_enabled
   mode: single
   
+- id: 'ev_stop_charging_immediate'
+  alias: EV - Stop charging immediate
+  description: Stopper straks når ladning ikke længere er tilladt
+  triggers:
+    - trigger: state
+      entity_id:
+        - input_select.ev_charge_mode
+      to: 'Stop'
+    - trigger: state
+      entity_id:
+        - input_boolean.ev_ha_control_enabled
+      to: 'off'
+    - trigger: state
+      entity_id:
+        - input_boolean.ev_session_active
+      to: 'off'
+    - trigger: state
+      entity_id:
+        - binary_sensor.charging_cable_connected
+      to: 'off'
+  conditions:
+    - condition: state
+      entity_id: switch.eh45khwp_charger_enabled
+      state: 'on'
+  actions:
+    - service: script.ev_charge_stop
+    - service: logbook.log
+      data:
+        name: EV
+        message: >
+          Stoppet straks
+          (mode={{ states('input_select.ev_charge_mode') }},
+          ha_control={{ states('input_boolean.ev_ha_control_enabled') }},
+          session={{ states('input_boolean.ev_session_active') }},
+          cable={{ states('binary_sensor.charging_cable_connected') }})
+  mode: single
+
 - id: 'ev_sync_planned_to_session_when_idle'
   alias: EV - Sync planned ready time to session when idle
   description: ''
@@ -417,52 +429,48 @@
 
 - id: 'ev_apply_target_ampere'
   alias: EV - Apply target ampere
-  description: Sender beregnet ampere til Easee når målet ændrer sig og opladning er aktiv/relevant
+  description: 'Vedligeholder ampere under aktiv/relevant opladning, men starter ikke ladning i sig selv'
   triggers:
     - trigger: state
       entity_id:
         - sensor.ev_target_ampere_effective
       for:
-        minutes: 15
-
+        seconds: 20
     - trigger: state
       entity_id:
-        - sensor.ev_charge_decision
-      to: 'LAD'
+        - switch.eh45khwp_charger_enabled
+      to: 'on'
       for:
-        minutes: 1
-
+        seconds: 10
     - trigger: state
       entity_id:
         - input_select.ev_charge_mode
-      to:
-        - Charge Now
-        - Auto
-        - Monta Guest
+      to: 'Charge Now'
       for:
         seconds: 10
-
   conditions:
     - condition: state
       entity_id: input_boolean.ev_ha_control_enabled
       state: 'on'
-
     - condition: state
       entity_id: input_boolean.ev_session_active
       state: 'on'
-
     - condition: state
       entity_id: binary_sensor.charging_cable_connected
       state: 'on'
-
+    - condition: template
+      value_template: "{{ states('sensor.ev_target_ampere_effective') | int(0) >= 6 }}"
     - condition: template
       value_template: >
-        {{ states('sensor.ev_charge_decision') == 'LAD'
-           or states('input_select.ev_charge_mode') == 'Charge Now' }}
-
+        {{
+          is_state('switch.eh45khwp_charger_enabled', 'on')
+          or is_state('input_select.ev_charge_mode', 'Charge Now')
+          or is_state('sensor.ev_charge_decision', 'LAD')
+        }}
   actions:
     - action: script.ev_set_target_ampere
-
+      data:
+        ampere: "{{ states('sensor.ev_target_ampere_effective') | int(0) }}"
   mode: restart  
 
 - id: 'intellicharge_acquire_ev_override'
@@ -743,3 +751,7 @@
             {{ is_state('sensor.ev_intellicharge_smart_status_2', 'Allow Always') }}
       then:
         - service: script.intellicharge_apply_smart
+
+     
+
+    
