@@ -4,33 +4,46 @@ ev_charge_start:
   sequence:
     - variables:
         target_ampere: "{{ states('sensor.ev_target_ampere_effective') | int(0) }}"
+
     - condition: template
       value_template: "{{ target_ampere >= 6 and target_ampere <= 16 }}"
+
     - action: script.ev_set_target_ampere
       data:
         ampere: "{{ target_ampere }}"
+
     - delay: "00:00:02"
+
     - service: switch.turn_on
       target:
         entity_id: switch.eh45khwp_charger_enabled
+
+    - delay: "00:00:02"
+
+    - service: rest_command.easee_start_charging
+
     - action: logbook.log
       data:
         name: EV
         entity_id: switch.eh45khwp_charger_enabled
-        message: "Lader aktiveret med {{ target_ampere }} A"  
+        message: "Easee start_charging sendt med {{ target_ampere }} A"
 
 ev_charge_stop:
   alias: EV Charge Stop
   mode: single
   sequence:
-    # Stop opladning
+    - service: rest_command.easee_stop_charging
+
+    - delay: "00:00:02"
+
     - service: switch.turn_off
       target:
         entity_id: switch.eh45khwp_charger_enabled
+
     - action: logbook.log
       data:
         name: EV
-        message: "Lader stoppet"    
+        message: "Easee stop_charging sendt og lader stoppet"           
         
 ev_set_manual_ampere:
   alias: EV - Set manual ampere

@@ -34,6 +34,7 @@ input_select:
       - Stop
       - Charge Now
       - Monta Guest
+      - Sun Optimized
     initial: Auto
 
   ev_guest_target_quick:
@@ -105,6 +106,21 @@ input_datetime:
     name: "EV IntelliCharge Last Change (internal)"
     has_date: true
     has_time: true
+
+  ev_segment_started_at:
+    name: EV Segment Started At
+    has_date: true
+    has_time: true  
+
+  ev_session_started_at:
+    name: EV Session Started At
+    has_date: true
+    has_time: true
+
+  ev_session_finished_at:
+    name: EV Session Finished At
+    has_date: true
+    has_time: true      
 
 input_number:
   ev_guest_planned_start_soc:
@@ -203,6 +219,61 @@ input_number:
     max: 32
     step: 1  
 
+  ev_segment_start_energy_kwh:
+    name: EV Segment Start Energy
+    min: 0
+    max: 200
+    step: 0.01
+    unit_of_measurement: kWh
+    mode: box
+
+  ev_segment_ampere:
+    name: EV Segment Ampere
+    min: 0
+    max: 32
+    step: 1
+    unit_of_measurement: A
+    mode: box  
+
+  ev_session_energy_latched_kwh:
+      name: EV Session Energy Latched
+      min: 0
+      max: 200
+      step: 0.01
+      unit_of_measurement: kWh
+      mode: box
+
+  ev_session_max_ampere:
+    name: EV Session Max Ampere
+    min: 0
+    max: 32
+    step: 1
+    unit_of_measurement: A
+    mode: box    
+
+  ev_sun_optimized_latched_export_kw:
+    name: EV Sun Optimized Latched Export
+    min: 0
+    max: 50
+    step: 0.01
+    unit_of_measurement: kW
+    mode: box  
+
+input_text:
+  ev_last_segment_summary:
+    name: EV Last Segment Summary
+    max: 255   
+
+  ev_session_mode_latched:
+      name: EV Session Mode Latched
+      max: 50
+
+  ev_last_session_summary:
+    name: EV Last Session Summary
+    max: 255 
+
+   
+
 sensor:
     - platform: statistics
       name: Grid Export Power Average 2m
@@ -210,6 +281,16 @@ sensor:
       state_characteristic: mean
       max_age:
         minutes: 2
+
+
+    - platform: statistics
+      name: EV Solar Surplus Before Car Average 15m
+      unique_id: ev_solar_surplus_before_car_average_15m
+      entity_id: sensor.ev_solar_surplus_before_car
+      state_characteristic: mean
+      sampling_size: 900
+      max_age:
+        minutes: 15
       
     - platform: integration
       source: sensor.ev_solar_power_to_car_estimate
@@ -583,7 +664,8 @@ template:
           {% else %}
             {{ none }}
           {% endif %}
-          
+
+            
       - name: "EV Charge Decision"
         unique_id: ev_charge_decision
         state: >
@@ -623,6 +705,16 @@ template:
           {% elif mode == 'Stop' %}
             VENT
           {% elif mode == 'Charge Now' %}
+            LAD
+          {% elif mode == 'Sun Optimized' %}
+            {% if currently_charging %}
+              LAD
+            {% elif raw >= 6 %}
+              LAD
+            {% else %}
+              VENT
+            {% endif %}
+          {% elif mode == 'Monta Guest' and currently_charging %}
             LAD
           {% elif deadline %}
             LAD
@@ -677,6 +769,12 @@ template:
               Stop
             {% elif mode == 'Charge Now' %}
               Charge Now
+            {% elif mode == 'Sun Optimized' and currently_charging %}
+              Sun Optimized charging
+            {% elif mode == 'Sun Optimized' and raw >= 6 %}
+              Sun Optimized solar average allows charging
+            {% elif mode == 'Sun Optimized' %}
+              Sun Optimized waiting for solar
             {% elif deadline %}
               Deadline
             {% elif currently_charging %}
@@ -698,9 +796,6 @@ template:
 
           enabled: >
             {{ is_state('input_boolean.ev_ha_control_enabled', 'on') }}
-
-          manual_override: >
-            {{ is_state('input_boolean.ev_manual_override', 'on') }}
 
           session_active: >
             {{ is_state('input_boolean.ev_session_active', 'on') }}
@@ -727,7 +822,8 @@ template:
             {{ states('sensor.ev_next_charge_window_real') }}
 
           charger_power_kw: >
-            {{ states('sensor.eh45khwp_power') | float(0) | round(2) }}
+            {{ states('sensor.eh45khwp_power') | float(0) | round(2) }}    
+      
 
       - name: "EV Solar Surplus Before Car"
         unique_id: ev_solar_surplus_before_car
@@ -915,14 +1011,13 @@ template:
           {% set need = states('sensor.ev_remaining_hours_needed') | float(0) %}
           {% set ready = states('input_datetime.ev_session_ready_by') %}
 
-          {% if need <= 0 or ready in ['unknown', 'unavailable', ''] %}
+          {% if need <= 0 or ready in ['unknown', 'unavailable', '', 'none'] %}
             -
           {% else %}
             {% set now_ts = as_timestamp(now()) %}
             {% set ready_ts = as_timestamp(ready) %}
-            {% set ns = namespace(candidates=[], remaining=need, selected=[], merged=[], out=[]) %}
+            {% set ns = namespace(candidates=[], remaining=need, selected=[], out=[], cur_start=none, cur_end=none) %}
 
-            {# Byg kandidater: behold ægte slot-start/-slut, men beregn brugbar overlap separat #}
             {% for item in prices %}
               {% set slot_start = as_timestamp(item.start) %}
               {% set slot_end = slot_start + 3600 %}
@@ -931,51 +1026,48 @@ template:
               {% set usable_hours = (usable_end - usable_start) / 3600 %}
 
               {% if usable_hours > 0 %}
-                {% set ns.candidates = ns.candidates + [(item.price | float(999), slot_start, slot_end, usable_hours)] %}
+                {% set ns.candidates = ns.candidates + [[item.price | float(999), slot_start, slot_end, usable_hours]] %}
               {% endif %}
             {% endfor %}
 
-            {# Vælg billigste slots først, men behold slot-grænserne stabile #}
-            {% set sorted_candidates = ns.candidates | sort %}
-
-            {% for price, slot_start, slot_end, usable_hours in sorted_candidates %}
+            {% for item in ns.candidates | sort %}
               {% if ns.remaining > 0 %}
-                {% set used = [usable_hours, ns.remaining] | min %}
+                {% set used = [item[3], ns.remaining] | min %}
                 {% set ns.remaining = ns.remaining - used %}
-                {% set ns.selected = ns.selected + [(slot_start, slot_end)] %}
+                {% set ns.selected = ns.selected + [[item[1], item[2]]] %}
               {% endif %}
             {% endfor %}
 
-            {# Sortér kronologisk #}
-            {% set selected_sorted = ns.selected | sort %}
+            {% for item in ns.selected | sort %}
+              {% set start_ts = item[0] %}
+              {% set end_ts = item[1] %}
 
-            {# Merge sammenhængende vinduer #}
-            {% for start_ts, end_ts in selected_sorted %}
-              {% if ns.merged | count == 0 %}
-                {% set ns.merged = [(start_ts, end_ts)] %}
+              {% if ns.cur_start is none %}
+                {% set ns.cur_start = start_ts %}
+                {% set ns.cur_end = end_ts %}
+              {% elif start_ts <= (ns.cur_end + 60) %}
+                {% set ns.cur_end = [ns.cur_end, end_ts] | max %}
               {% else %}
-                {% set last = ns.merged[-1] %}
-                {% set last_start = last[0] %}
-                {% set last_end = last[1] %}
-
-                {% if start_ts <= (last_end + 60) %}
-                  {% set ns.merged = ns.merged[:-1] + [(last_start, [last_end, end_ts] | max)] %}
-                {% else %}
-                  {% set ns.merged = ns.merged + [(start_ts, end_ts)] %}
-                {% endif %}
+                {% set ns.out = ns.out + [
+                  (ns.cur_start | timestamp_custom('%H:%M', true))
+                  ~ '-'
+                  ~ (ns.cur_end | timestamp_custom('%H:%M', true))
+                ] %}
+                {% set ns.cur_start = start_ts %}
+                {% set ns.cur_end = end_ts %}
               {% endif %}
             {% endfor %}
 
-            {# Formatér stabilt som rigtige vinduer #}
-            {% for start_ts, end_ts in ns.merged %}
-              {% set start_txt = start_ts | timestamp_custom('%H:%M') %}
-              {% set end_txt = end_ts | timestamp_custom('%H:%M') %}
-              {% set ns.out = ns.out + [start_txt ~ '-' ~ end_txt] %}
-            {% endfor %}
+            {% if ns.cur_start is not none %}
+              {% set ns.out = ns.out + [
+                (ns.cur_start | timestamp_custom('%H:%M', true))
+                ~ '-'
+                ~ (ns.cur_end | timestamp_custom('%H:%M', true))
+              ] %}
+            {% endif %}
 
             {{ ns.out | join(', ') if ns.out | count > 0 else '-' }}
           {% endif %}
-          
       - name: "EV Next Charge Window Real"
         unique_id: ev_next_charge_window_real
         state: >
@@ -1022,11 +1114,23 @@ template:
           {% set margin = 0.05 %}
           {% set target = ref - margin %}
           {% set X = states('sensor.ev_solar_surplus_before_car') | float(0) %}
+          {% set Xavg = states('sensor.ev_solar_surplus_before_car_average_15m') | float(0) %}
           {% set decision = states('sensor.ev_charge_decision') %}
           {% set mode = states('input_select.ev_charge_mode') %}
+          {% set kw_per_amp = 11 / 16 %}
 
           {% if mode == 'Charge Now' %}
             16
+
+          {% elif mode == 'Sun Optimized' %}
+            {% set A = (Xavg / kw_per_amp) | int(0) %}
+            {% if A < 6 %}
+              0
+            {% elif A > 16 %}
+              16
+            {% else %}
+              {{ A }}
+            {% endif %}
 
           {% elif Y <= target %}
             16
@@ -1061,12 +1165,52 @@ template:
           solar_surplus_kw: >
             {{ states('sensor.ev_solar_surplus_before_car') | float(0) | round(2) }}
 
+          solar_surplus_avg_15m_kw: >
+            {{ states('sensor.ev_solar_surplus_before_car_average_15m') | float(0) | round(2) }}
+
           grid_price: >
             {{ states('sensor.stromligning_current_price_vat') | float(0) | round(3) }}
 
           target_price: >
             {{ (states('sensor.ev_night_reference_price_real') | float(999) - 0.05) | round(3) }}
 
+          mode: >
+            {{ states('input_select.ev_charge_mode') }}
+
+          decision: >
+            {{ states('sensor.ev_charge_decision') }}
+
+          amp_floor_from_avg: >
+            {% set Xavg = states('sensor.ev_solar_surplus_before_car_average_15m') | float(0) %}
+            {% set kw_per_amp = 11 / 16 %}
+            {{ (Xavg / kw_per_amp) | int(0) }}
+
+          reason: >
+            {% set mode = states('input_select.ev_charge_mode') %}
+            {% set Y = states('sensor.stromligning_current_price_vat') | float(0) %}
+            {% set ref = states('sensor.ev_night_reference_price_real') | float(999) %}
+            {% set target = ref - 0.05 %}
+            {% set X = states('sensor.ev_solar_surplus_before_car') | float(0) %}
+            {% set Xavg = states('sensor.ev_solar_surplus_before_car_average_15m') | float(0) %}
+            {% set A = states('sensor.ev_target_ampere_raw') | int(0) %}
+
+            {% if mode == 'Charge Now' %}
+              Charge Now → 16A
+            {% elif mode == 'Sun Optimized' and A >= 6 %}
+              Sun Optimized from 15m solar average
+            {% elif mode == 'Sun Optimized' %}
+              Sun Optimized waiting for >= 6A solar average
+            {% elif Y <= target %}
+              Grid below target → 16A
+            {% elif X <= 0 and states('sensor.ev_charge_decision') == 'LAD' %}
+              Slot charging without solar → 16A
+            {% elif X <= 0 %}
+              No solar → no charging
+            {% elif A < 6 %}
+              Solar insufficient vs target price
+            {% else %}
+              Solar meets target price
+            {% endif %}
       - name: "EV Target Ampere Stable"
         unique_id: ev_target_ampere_stable
         unit_of_measurement: "A"
@@ -1226,6 +1370,16 @@ template:
 
           charger_power_kw: >
             {{ (11 * (states('sensor.ev_target_ampere_effective') | float(0) / 16)) | round(2) }}
+
+          solar_fraction: >
+            {% set amp = states('sensor.ev_target_ampere_effective') | float(0) %}
+            {% set solar_kw = states('sensor.ev_solar_surplus_before_car') | float(0) %}
+            {% set charger_power = 11 * (amp / 16) %}
+            {% if amp >= 6 and charger_power > 0 %}
+              {{ ([solar_kw, charger_power] | min / charger_power) | round(3) }}
+            {% else %}
+              0
+            {% endif %}
 
       - name: "EV Planned Finish Time"
         unique_id: ev_planned_finish_time
@@ -1607,6 +1761,12 @@ template:
           {% set effective = states('sensor.ev_target_ampere_effective') | int(0) %}
           {% set missing = states('sensor.ev_missing_requirements') %}
           {% set no_current_reason = states('sensor.eh45khwp_reason_for_no_current') %}
+          {% set soc = states('sensor.battery_level') | float(0) %}
+          {% set car_target = states('sensor.battery_target_charge_level') | float(0) %}
+          {% set session_target = states('input_number.ev_session_target_soc') | float(0) %}
+          {% set target = car_target if car_target > 0 else session_target %}
+          {% set target_reached = target > 0 and soc >= (target - 0.5) %}
+          {% set session_complete = is_state('binary_sensor.ev_session_complete', 'on') %}
           {% set ns = namespace(slot_start_ts=none, slot_end_ts=none, slot_active=false, slot_future=false) %}
 
           {% if next_slot not in ['unknown', 'unavailable', '', '-', 'none'] and '-' in next_slot %}
@@ -1625,7 +1785,9 @@ template:
 
           {% if mode == 'Stop' %}
             Stop valgt
-          {% elif remaining not in ['unknown', 'unavailable', '', 'none'] and (remaining | float(0) <= 0) %}
+          {% elif mode in ['Auto', 'Charge Now', 'Sun Optimized'] and target_reached %}
+            Færdig
+          {% elif mode == 'Monta Guest' and session_complete %}
             Færdig
           {% elif not ready %}
             Mangler – tryk for detaljer
@@ -1643,6 +1805,12 @@ template:
             Blokeret – krav ikke opfyldt
           {% elif decision == 'LAD' and raw >= 6 and stable >= 6 and effective >= 6 %}
             Klar til opladning
+          {% elif mode == 'Sun Optimized' and decision == 'VENT' %}
+            Klar - venter på sol
+          {% elif mode == 'Auto' and ns.slot_future %}
+            Klar - venter på slot {{ next_slot }}
+          {% elif mode == 'Auto' and decision == 'VENT' %}
+            Klar - venter på billigere slot
           {% elif ns.slot_future %}
             Klar - venter på slot {{ next_slot }}
           {% elif ns.slot_active %}
@@ -1661,6 +1829,7 @@ template:
             {% endif %}
 
           explanation: >
+            {% set mode = states('input_select.ev_charge_mode') %}
             {% set decision = states('sensor.ev_charge_decision') %}
             {% set power_kw = states('sensor.eh45khwp_power') | float(0) %}
             {% set charging = power_kw > 0.5 %}
@@ -1671,8 +1840,15 @@ template:
             {% set effective = states('sensor.ev_target_ampere_effective') | int(0) %}
             {% set m = states('sensor.ev_missing_requirements') %}
             {% set no_current_reason = states('sensor.eh45khwp_reason_for_no_current') %}
+            {% set soc = states('sensor.battery_level') | float(0) %}
+            {% set car_target = states('sensor.battery_target_charge_level') | float(0) %}
+            {% set session_target = states('input_number.ev_session_target_soc') | float(0) %}
+            {% set target = car_target if car_target > 0 else session_target %}
+            {% set target_reached = target > 0 and soc >= (target - 0.5) %}
 
-            {% if charging %}
+            {% if target_reached and mode in ['Auto', 'Charge Now', 'Sun Optimized'] %}
+              Bilen har nået target SOC.
+            {% elif charging %}
               Bilen lader fysisk lige nu.
             {% elif start_delay %}
               Systemet har besluttet at lade og afventer start-delay.
@@ -1686,6 +1862,10 @@ template:
               Systemet vil gerne lade, men mindst ét krav er ikke opfyldt: {{ m }}
             {% elif decision == 'LAD' and raw >= 6 and stable >= 6 and effective >= 6 %}
               Systemet vil gerne lade og har gyldig ampere, men afventer at startflowet materialiserer sig.
+            {% elif mode == 'Sun Optimized' and decision == 'VENT' %}
+              Systemet er i Sun Optimized og venter på tilstrækkelig sol til minimum 6A.
+            {% elif mode == 'Auto' and decision == 'VENT' %}
+              Systemet er i Auto og afventer næste valgte/billigere ladevindue.
             {% else %}
               Systemet afventer planlagte slots eller bedre betingelser.
             {% endif %}
@@ -1695,6 +1875,10 @@ template:
           mode: "{{ states('input_select.ev_charge_mode') }}"
           ready_to_charge: "{{ states('binary_sensor.ev_ready_to_charge') }}"
           remaining_kwh: "{{ states('sensor.ev_remaining_energy_live_kwh') }}"
+          battery_soc: "{{ states('sensor.battery_level') }}"
+          car_target_soc: "{{ states('sensor.battery_target_charge_level') }}"
+          session_target_soc: "{{ states('input_number.ev_session_target_soc') }}"
+          session_complete: "{{ states('binary_sensor.ev_session_complete') }}"
           raw_ampere: "{{ states('sensor.ev_target_ampere_raw') }}"
           stable_ampere: "{{ states('sensor.ev_target_ampere_stable') }}"
           target_ampere: "{{ states('sensor.ev_target_ampere_effective') }}"
@@ -1856,25 +2040,65 @@ template:
           {% set age = states('sensor.intellicharge_token_age_hours') | float(0) %}
           {{ age > 20 }} 
 
-
       - name: "EV Should Force IntelliCharge Allow"
         unique_id: ev_should_force_intellicharge_allow
         state: >
           {% set mode = states('input_select.ev_charge_mode') %}
-          {% set decision = states('sensor.ev_charge_decision') %}
-          {% set price = states('sensor.electricity_price_now_real') | float(999) %}
-          {% set cable = is_state('binary_sensor.charging_cable_connected', 'on') %}
-          {% set session = is_state('input_boolean.ev_session_active', 'on') %}
           {% set ha = is_state('input_boolean.ev_ha_control_enabled', 'on') %}
+          {% set session = is_state('input_boolean.ev_session_active', 'on') %}
+          {% set cable = is_state('binary_sensor.ev_cable_connected_effective', 'on') %}
+          {% set gate = is_state('binary_sensor.ev_sun_optimized_export_gate', 'on') %}
+          {% set charging = states('sensor.eh45khwp_power') | float(0) > 0.5 %}
+          {% set decision = states('sensor.ev_charge_decision') %}
 
           {{
             ha
             and session
             and cable
-            and mode in ['Auto', 'Charge Now', 'Monta Guest']
-            and decision == 'LAD'
-            and price < 0
-          }}    
+            and mode != 'Stop'
+            and (
+              gate
+              or charging
+              or decision == 'LAD'
+            )
+          }}
+
+        attributes:
+          mode: "{{ states('input_select.ev_charge_mode') }}"
+          ha_control: "{{ states('input_boolean.ev_ha_control_enabled') }}"
+          session_active: "{{ states('input_boolean.ev_session_active') }}"
+          cable_connected: "{{ states('binary_sensor.ev_cable_connected_effective') }}"
+          gate: "{{ states('binary_sensor.ev_sun_optimized_export_gate') }}"
+          latched_export_kw: "{{ states('input_number.ev_sun_optimized_latched_export_kw') }}"
+          current_export_kw: "{{ states('sensor.grid_export_power_average_2m_safe') }}"
+          charging: "{{ states('sensor.eh45khwp_power') | float(0) > 0.5 }}"
+          decision: "{{ states('sensor.ev_charge_decision') }}"
+          reason: >
+            {% set mode = states('input_select.ev_charge_mode') %}
+            {% set ha = is_state('input_boolean.ev_ha_control_enabled', 'on') %}
+            {% set session = is_state('input_boolean.ev_session_active', 'on') %}
+            {% set cable = is_state('binary_sensor.ev_cable_connected_effective', 'on') %}
+            {% set gate = is_state('binary_sensor.ev_sun_optimized_export_gate', 'on') %}
+            {% set charging = states('sensor.eh45khwp_power') | float(0) > 0.5 %}
+            {% set decision = states('sensor.ev_charge_decision') %}
+
+            {% if not ha %}
+              HA control off
+            {% elif not session %}
+              No active EV session
+            {% elif not cable %}
+              Cable not connected
+            {% elif mode == 'Stop' %}
+              Stop mode
+            {% elif charging %}
+              Already charging, keep inverter available
+            {% elif decision == 'LAD' %}
+              EV decision is LAD, keep inverter available
+            {% elif gate %}
+              Latched export can support at least 6A
+            {% else %}
+              No reason to force inverter open
+            {% endif %}
 
       - name: "EV Ampere Update Allowed"
         unique_id: ev_ampere_update_allowed
@@ -1914,6 +2138,21 @@ template:
             and ready_ok
             and remaining_ok
           }}
+      - name: "EV Sun Optimized Export Gate"
+        unique_id: ev_sun_optimized_export_gate
+        state: >
+          {{ states('input_number.ev_sun_optimized_latched_export_kw') | float(0) >= 4.125 }}
+        attributes:
+          latched_export_kw: >
+            {{ states('input_number.ev_sun_optimized_latched_export_kw') | float(0) | round(2) }}
+          threshold_kw: 4.125
+          reason: >
+            {% set export = states('input_number.ev_sun_optimized_latched_export_kw') | float(0) %}
+            {% if export >= 4.125 %}
+              Last known export can support at least 6A
+            {% else %}
+              Last known export cannot support 6A
+            {% endif %}    
 
 # 2. Kommandoen der styrer ampere 
 rest_command:
@@ -1944,6 +2183,19 @@ rest_command:
     payload: >
       {"smart_0_export": 0, "allow_export_to_grid": false, "enable_buy_from_grid": true, "enable_sell_to_grid": true, "enable_idle": true, "enable_locked": true}    
 
+  easee_start_charging:
+    url: "https://api.easee.com/api/chargers/EH45KHWP/commands/start_charging"
+    method: post
+    headers:
+      authorization: "Bearer {{ state_attr('sensor.easee_api_access_token_final_2', 'accessToken') }}"
+      content-type: "application/json"
+
+  easee_stop_charging:
+    url: "https://api.easee.com/api/chargers/EH45KHWP/commands/stop_charging"
+    method: post
+    headers:
+      authorization: "Bearer {{ state_attr('sensor.easee_api_access_token_final_2', 'accessToken') }}"
+      content-type: "application/json" 
 
 
 rest:
