@@ -1796,9 +1796,9 @@ template:
           {% elif start_delay %}
             Starter snart
           {% elif decision == 'LAD' and effective < 6 %}
-            Blokeret – ampere for lav
+            Blokeret – Amp for lav
           {% elif decision == 'LAD' and charger_on and no_current_reason == 'pending_authorization' %}
-            Blokeret – afventer bilens godkendelse
+            Blokeret – afventer bil
           {% elif decision == 'LAD' and charger_on and not charging %}
             Blokeret – ingen ladeeffekt
           {% elif decision == 'LAD' and missing != 'OK' %}
@@ -2003,7 +2003,17 @@ template:
       - name: "EV Charging Actual"
         unique_id: ev_charging_actual
         state: >
-          {{ states('sensor.eh45khwp_power') | float(0) > 100 }}     
+          {{ states('sensor.eh45khwp_power') | float(0) > 100 }}   
+
+      - name: "EV IntelliCharge Decision Text"
+        unique_id: ev_intellicharge_decision_text
+        state: >
+          {% if is_state('binary_sensor.ev_should_force_intellicharge_allow', 'on') %}
+            Set Allow Always
+          {% else %}
+            Keep Smart
+          {% endif %}           
+      
 
         
  # -----------------------------------------------------------------------------
@@ -2152,8 +2162,9 @@ template:
               Last known export can support at least 6A
             {% else %}
               Last known export cannot support 6A
-            {% endif %}    
+            {% endif %}  
 
+      
 # 2. Kommandoen der styrer ampere 
 rest_command:
   set_ioniq_ampere:
@@ -2285,7 +2296,8 @@ rest:
           - enable_sell_to_grid
           - enable_idle
           - enable_locked
-
+  
+      
   
 
           

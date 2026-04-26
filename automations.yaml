@@ -72,42 +72,74 @@
       entity_id:
         - binary_sensor.charging_cable_connected
       to: 'on'
+    - trigger: state
+      entity_id:
+        - binary_sensor.ev_cable_connected_effective
+      to: 'on'
   conditions: []
   actions:
     - action: input_datetime.set_datetime
-      metadata: {}
       target:
         entity_id: input_datetime.ev_session_ready_by
       data:
         datetime: "{{ states('input_datetime.ev_planned_ready_by') }}"
-    - action: input_number.set_value
-      target:
-        entity_id: input_number.ev_session_target_soc
-      data:
-        value: "{{ states('input_number.ev_guest_planned_target_soc') | float(80) }}"
-    - action: input_number.set_value
-      metadata: {}
-      target:
-        entity_id: input_number.ev_session_start_soc
-      data:
-        value: "{{ states('sensor.battery_level') | float(0) }}"
-    - action: input_number.set_value
-      metadata: {}
-      target:
-        entity_id: input_number.ev_session_target_soc
-      data:
-        value: "{{ states('sensor.battery_target_charge_level') | float(80) }}"
-    - action: input_number.set_value
-      metadata: {}
-      target:
-        entity_id: input_number.ev_session_battery_kwh
-      data:
-        value: 77
+
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: input_select.ev_charge_mode
+              state: 'Monta Guest'
+          sequence:
+            - action: input_number.set_value
+              target:
+                entity_id: input_number.ev_session_start_soc
+              data:
+                value: "{{ states('input_number.ev_guest_planned_start_soc') | float(0) }}"
+
+            - action: input_number.set_value
+              target:
+                entity_id: input_number.ev_session_target_soc
+              data:
+                value: "{{ states('input_number.ev_guest_planned_target_soc') | float(80) }}"
+
+            - action: input_number.set_value
+              target:
+                entity_id: input_number.ev_session_battery_kwh
+              data:
+                value: "{{ states('input_number.ev_guest_planned_battery_kwh') | float(77) }}"
+
+      default:
+        - action: input_number.set_value
+          target:
+            entity_id: input_number.ev_session_start_soc
+          data:
+            value: "{{ states('sensor.battery_level') | float(0) }}"
+
+        - action: input_number.set_value
+          target:
+            entity_id: input_number.ev_session_target_soc
+          data:
+            value: "{{ states('sensor.battery_target_charge_level') | float(80) }}"
+
+        - action: input_number.set_value
+          target:
+            entity_id: input_number.ev_session_battery_kwh
+          data:
+            value: 77
+
     - action: input_boolean.turn_on
-      metadata: {}
       target:
         entity_id: input_boolean.ev_session_active
-      data: {}
+
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          Session startet
+          (mode={{ states('input_select.ev_charge_mode') }},
+          start_soc={{ states('input_number.ev_session_start_soc') }},
+          target_soc={{ states('input_number.ev_session_target_soc') }},
+          ready_by={{ states('input_datetime.ev_session_ready_by') }})
   mode: single
 
 - id: 'ev_start_charging_stable'
@@ -1143,24 +1175,30 @@
     - trigger: state
       entity_id:
         - sensor.battery_target_charge_level
+    - trigger: state
+      entity_id:
+        - input_select.ev_charge_mode
+    - trigger: homeassistant
+      event: start
+
   conditions:
     - condition: state
       entity_id: input_boolean.ev_session_active
       state: 'on'
-
     - condition: template
       value_template: >
         {{
-          states('sensor.battery_target_charge_level') not in
+          states('input_select.ev_charge_mode') != 'Monta Guest'
+          and states('sensor.battery_target_charge_level') not in
           ['unknown', 'unavailable', '', 'none']
         }}
+
   actions:
     - action: input_number.set_value
       target:
         entity_id: input_number.ev_session_target_soc
       data:
-        value: >
-          {{ states('sensor.battery_target_charge_level') | float(80) }}
+        value: "{{ states('sensor.battery_target_charge_level') | float(80) }}"
 
     - action: logbook.log
       data:
@@ -1188,3 +1226,103 @@
       data:
         value: "{{ states('sensor.grid_export_power_average_2m_safe') | float(0) | round(2) }}"
   mode: restart
+
+- id: 'ev_roll_ready_by_when_target_reached'
+  alias: EV - Roll Ready By when target reached
+  description: Rykker Ready By til næste dag kl. 09:00 når bilen har nået ønsket SOC efter opladning
+  triggers:
+    - trigger: state
+      entity_id:
+        - binary_sensor.ev_session_complete
+      to: 'on'
+      for:
+        minutes: 1
+
+    - trigger: state
+      entity_id:
+        - sensor.battery_level
+      for:
+        minutes: 1
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+    - condition: template
+      value_template: >
+        {{ states('input_select.ev_charge_mode') != 'Monta Guest' }}
+
+    - condition: template
+      value_template: >
+        {{
+          states('input_number.ev_session_energy_latched_kwh') | float(0) > 0.05
+          or states('sensor.eh45khwp_session_energy') | float(0) > 0.05
+        }}
+
+    - condition: template
+      value_template: >
+        {% set soc = states('sensor.battery_level') | float(0) %}
+        {% set target = states('sensor.battery_target_charge_level') | float(0) %}
+        {{ target > 0 and soc >= (target - 0.5) }}
+
+  actions:
+    - variables:
+        next_ready: "{{ (today_at('09:00:00') + timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S') }}"
+
+    - action: input_datetime.set_datetime
+      target:
+        entity_id:
+          - input_datetime.ev_planned_ready_by
+          - input_datetime.ev_session_ready_by
+      data:
+        datetime: "{{ next_ready }}"
+
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          Ready By rykket til {{ next_ready }} fordi target SOC er nået
+          efter opladning.
+
+  mode: single
+
+- id: 'ev_roll_ready_by_if_no_charge'
+  alias: EV - Roll Ready By if no charge
+  description: Rykker Ready By til næste dag kl. 09:00 hvis der ikke blev ladet inden deadline
+  triggers:
+    - trigger: time
+      at: input_datetime.ev_session_ready_by
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+    - condition: template
+      value_template: >
+        {{
+          states('input_number.ev_session_energy_latched_kwh') | float(0) <= 0.05
+          and states('sensor.eh45khwp_session_energy') | float(0) <= 0.05
+          and states('sensor.eh45khwp_power') | float(0) <= 0.5
+        }}
+
+  actions:
+    - variables:
+        next_ready: "{{ (today_at('09:00:00') + timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S') }}"
+
+    - action: input_datetime.set_datetime
+      target:
+        entity_id:
+          - input_datetime.ev_planned_ready_by
+          - input_datetime.ev_session_ready_by
+      data:
+        datetime: "{{ next_ready }}"
+
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          Ready By rykket til {{ next_ready }} fordi der ikke blev ladet inden deadline.
+
+  mode: single
