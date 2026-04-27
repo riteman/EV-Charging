@@ -196,7 +196,7 @@
       entity_id: sensor.ev_charge_decision
       state: 'LAD'
     - condition: template
-      value_template: "{{ states('sensor.ev_target_ampere_effective') | int(0) >= 6 }}"
+      value_template: "{{ states('sensor.ev_target_ampere_effective') | int(0) >= states('input_number.ev_min_charge_ampere') | int(7) }}"
     - condition: template
       value_template: "{{ states('sensor.eh45khwp_power') | float(0) < 0.5 }}"
     - condition: state
@@ -224,7 +224,7 @@
               entity_id: sensor.ev_charge_decision
               state: 'LAD'
             - condition: template
-              value_template: "{{ states('sensor.ev_target_ampere_effective') | int(0) >= 6 }}"
+              value_template: "{{ states('sensor.ev_target_ampere_effective') | int(0) >= states('input_number.ev_min_charge_ampere') | int(7) }}"
             - condition: template
               value_template: "{{ states('sensor.eh45khwp_power') | float(0) < 0.5 }}"
             - condition: state
@@ -513,7 +513,7 @@
       entity_id: binary_sensor.charging_cable_connected
       state: 'on'
     - condition: template
-      value_template: "{{ states('sensor.ev_target_ampere_effective') | int(0) >= 6 }}"
+      value_template: "{{ states('sensor.ev_target_ampere_effective') | int(0) >= states('input_number.ev_min_charge_ampere') | int(7) }}"
     - condition: template
       value_template: >
         {{
@@ -935,6 +935,16 @@
         ended_at: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
         mode: "{{ states('input_text.ev_session_mode_latched') }}"
 
+    - action: script.ev_log_segment_csv
+      data:
+        line: >
+          segment,{{ started_at }},{{ ended_at }},{{ mode }},
+          {{ old_ampere }},{{ segment_kwh }},
+          {{ segment_end_energy }},
+          {{ states('input_number.ev_session_start_soc') }},
+          {{ states('input_number.ev_session_target_soc') }},
+          {{ states('input_number.ev_session_battery_kwh') }}    
+
     - action: input_text.set_value
       target:
         entity_id: input_text.ev_last_segment_summary
@@ -1123,6 +1133,16 @@
           amp={{ old_ampere }} A,
           energy={{ segment_kwh }} kWh
 
+    - action: script.ev_log_segment_csv
+      data:
+        line: >
+          final_segment,{{ started_at }},{{ ended_at }},{{ mode }},
+          {{ old_ampere }},{{ segment_kwh }},
+          {{ final_energy | round(2) }},
+          {{ states('input_number.ev_session_start_soc') }},
+          {{ states('input_number.ev_session_target_soc') }},
+          {{ states('input_number.ev_session_battery_kwh') }}
+
     - action: input_datetime.set_datetime
       target:
         entity_id: input_datetime.ev_session_finished_at
@@ -1138,6 +1158,16 @@
           · mode={{ mode }}
           · energy={{ final_energy | round(2) }} kWh
           · max_amp={{ states('input_number.ev_session_max_ampere') }} A
+
+    - action: script.ev_log_session_csv
+      data:
+        line: >
+          session,{{ session_started_at }},{{ ended_at }},{{ mode }},
+          {{ final_energy | round(2) }},
+          {{ states('input_number.ev_session_max_ampere') }},
+          {{ states('input_number.ev_session_start_soc') }},
+          {{ states('input_number.ev_session_target_soc') }},
+          {{ states('input_number.ev_session_battery_kwh') }}
 
     - action: input_boolean.turn_off
       target:
@@ -1325,4 +1355,47 @@
         message: >
           Ready By rykket til {{ next_ready }} fordi der ikke blev ladet inden deadline.
 
+  mode: single
+
+- id: 'ev_refresh_car_soc_after_restart'
+  alias: EV - Refresh car SOC after restart
+  description: Opdaterer bilens SOC og target efter HA restart
+  triggers:
+    - trigger: homeassistant
+      event: start
+  actions:
+    - delay: "00:00:45"
+
+    - action: homeassistant.update_entity
+      target:
+        entity_id:
+          - sensor.battery_level
+          - sensor.battery_target_charge_level
+
+    - delay: "00:00:15"
+
+    - if:
+        - condition: state
+          entity_id: input_boolean.ev_session_active
+          state: 'on'
+      then:
+        - action: input_number.set_value
+          target:
+            entity_id: input_number.ev_session_target_soc
+          data:
+            value: "{{ states('sensor.battery_target_charge_level') | float(80) }}"
+
+        - action: input_number.set_value
+          target:
+            entity_id: input_number.ev_session_start_soc
+          data:
+            value: "{{ states('sensor.battery_level') | float(0) }}"
+
+        - action: logbook.log
+          data:
+            name: EV
+            message: >
+              Efter restart: session SOC synkroniseret
+              target={{ states('sensor.battery_target_charge_level') }}%,
+              level={{ states('sensor.battery_level') }}%
   mode: single

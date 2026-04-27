@@ -259,6 +259,14 @@ input_number:
     unit_of_measurement: kW
     mode: box  
 
+  ev_min_charge_ampere:
+    name: EV Minimum Charge Ampere
+    min: 6
+    max: 10
+    step: 1
+    unit_of_measurement: A
+    mode: box  
+
 input_text:
   ev_last_segment_summary:
     name: EV Last Segment Summary
@@ -1118,13 +1126,14 @@ template:
           {% set decision = states('sensor.ev_charge_decision') %}
           {% set mode = states('input_select.ev_charge_mode') %}
           {% set kw_per_amp = 11 / 16 %}
+          {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
 
           {% if mode == 'Charge Now' %}
             16
 
           {% elif mode == 'Sun Optimized' %}
             {% set A = (Xavg / kw_per_amp) | int(0) %}
-            {% if A < 6 %}
+            {% if A < min_amp %}
               0
             {% elif A > 16 %}
               16
@@ -1151,7 +1160,7 @@ template:
               {% set Amax = (16 * X) / (11 * denom) %}
               {% set A = Amax | int(0) %}
 
-              {% if A < 6 %}
+              {% if A < min_amp %}
                 0
               {% elif A > 16 %}
                 16
@@ -1193,13 +1202,14 @@ template:
             {% set X = states('sensor.ev_solar_surplus_before_car') | float(0) %}
             {% set Xavg = states('sensor.ev_solar_surplus_before_car_average_15m') | float(0) %}
             {% set A = states('sensor.ev_target_ampere_raw') | int(0) %}
+            {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
 
             {% if mode == 'Charge Now' %}
               Charge Now → 16A
             {% elif mode == 'Sun Optimized' and A >= 6 %}
               Sun Optimized from 15m solar average
             {% elif mode == 'Sun Optimized' %}
-              Sun Optimized waiting for >= 6A solar average
+              Sun Optimized waiting for >= {{ min_amp }}A solar average
             {% elif Y <= target %}
               Grid below target → 16A
             {% elif X <= 0 and states('sensor.ev_charge_decision') == 'LAD' %}
@@ -1211,6 +1221,7 @@ template:
             {% else %}
               Solar meets target price
             {% endif %}
+
       - name: "EV Target Ampere Stable"
         unique_id: ev_target_ampere_stable
         unit_of_measurement: "A"
@@ -1265,58 +1276,23 @@ template:
         state: >
           {% set new = states('sensor.ev_target_ampere_stable') | int(0) %}
           {% set old = states('input_number.ev_last_sent_ampere') | int(0) %}
+          {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
           {% set last = states.input_number.ev_last_sent_ampere.last_changed %}
           {% set age_ok = (as_timestamp(now()) - as_timestamp(last)) > 900 %}
           {% set delta_ok = (new - old) | abs >= 2 %}
           {% set mode = states('input_select.ev_charge_mode') %}
 
           {% if mode == 'Charge Now' %}
-            {{ states('sensor.ev_target_ampere_raw') | int(0) }}
-          {% elif new == 0 %}
+            16
+          {% elif new > 0 and new < min_amp %}
             0
-          {% elif old < 6 and new >= 6 %}
-            {{ new }}
+          {% elif old > 0 and old < min_amp %}
+            {{ new if new >= min_amp else 0 }}
           {% elif age_ok and delta_ok %}
             {{ new }}
-          {% elif old >= 6 %}
-            {{ old }}
           {% else %}
-            {{ new }}
+            {{ old }}
           {% endif %}
-
-        attributes:
-          raw: >
-            {{ states('sensor.ev_target_ampere_raw') | int(0) }}
-          stable: >
-            {{ states('sensor.ev_target_ampere_stable') | int(0) }}
-          last_sent_ampere: >
-            {{ states('input_number.ev_last_sent_ampere') | int(0) }}
-          age_seconds: >
-            {% set last = states.input_number.ev_last_sent_ampere.last_changed %}
-            {{ (as_timestamp(now()) - as_timestamp(last)) | int(0) }}
-          mode: >
-            {{ states('input_select.ev_charge_mode') }}
-          reason: >
-            {% set new = states('sensor.ev_target_ampere_stable') | int(0) %}
-            {% set old = states('input_number.ev_last_sent_ampere') | int(0) %}
-            {% set last = states.input_number.ev_last_sent_ampere.last_changed %}
-            {% set age_ok = (as_timestamp(now()) - as_timestamp(last)) > 900 %}
-            {% set delta_ok = (new - old) | abs >= 2 %}
-            {% set mode = states('input_select.ev_charge_mode') %}
-
-            {% if mode == 'Charge Now' %}
-              Charge Now bypass
-            {% elif new == 0 %}
-              Effective stop
-            {% elif old < 6 and new >= 6 %}
-              Effective start
-            {% elif age_ok and delta_ok %}
-              Update allowed by age and delta
-            {% elif old >= 6 %}
-              Hold previous sent ampere
-            {% else %}
-              Use stable ampere
-            {% endif %}
           
       - name: "EV Ready Time Debug"
         unique_id: ev_ready_time_debug
@@ -1747,6 +1723,7 @@ template:
       - name: "EV Operational Status"
         unique_id: ev_operational_status
         state: >
+          {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
           {% set mode = states('input_select.ev_charge_mode') %}
           {% set ready = is_state('binary_sensor.ev_ready_to_charge', 'on') %}
           {% set decision = states('sensor.ev_charge_decision') %}
@@ -1795,7 +1772,7 @@ template:
             Lader nu
           {% elif start_delay %}
             Starter snart
-          {% elif decision == 'LAD' and effective < 6 %}
+          {% elif decision == 'LAD' and effective < min_amp %}
             Blokeret – Amp for lav
           {% elif decision == 'LAD' and charger_on and no_current_reason == 'pending_authorization' %}
             Blokeret – afventer bil
@@ -1803,7 +1780,7 @@ template:
             Blokeret – ingen ladeeffekt
           {% elif decision == 'LAD' and missing != 'OK' %}
             Blokeret – krav ikke opfyldt
-          {% elif decision == 'LAD' and raw >= 6 and stable >= 6 and effective >= 6 %}
+          {% elif decision == 'LAD' and raw >= min_amp and stable >= min_amp and effective >= min_amp %}
             Klar til opladning
           {% elif mode == 'Sun Optimized' and decision == 'VENT' %}
             Klar - venter på sol
@@ -1853,7 +1830,7 @@ template:
             {% elif start_delay %}
               Systemet har besluttet at lade og afventer start-delay.
             {% elif decision == 'LAD' and effective < 6 %}
-              Systemet vil gerne lade, men den effektive ampere er under minimum 6A.
+              Systemet vil gerne lade, men den effektive ampere er under minimum {{ min_amp }}A.
             {% elif decision == 'LAD' and charger_on and no_current_reason == 'pending_authorization' %}
               Laderen er klar, men bilen har endnu ikke godkendt opladningen.
             {% elif decision == 'LAD' and charger_on and not charging %}
@@ -1863,7 +1840,7 @@ template:
             {% elif decision == 'LAD' and raw >= 6 and stable >= 6 and effective >= 6 %}
               Systemet vil gerne lade og har gyldig ampere, men afventer at startflowet materialiserer sig.
             {% elif mode == 'Sun Optimized' and decision == 'VENT' %}
-              Systemet er i Sun Optimized og venter på tilstrækkelig sol til minimum 6A.
+              Systemet er i Sun Optimized og venter på tilstrækkelig sol til minimum {{ states('input_number.ev_min_charge_ampere') | int(7) }}A.
             {% elif mode == 'Auto' and decision == 'VENT' %}
               Systemet er i Auto og afventer næste valgte/billigere ladevindue.
             {% else %}
@@ -2151,18 +2128,30 @@ template:
       - name: "EV Sun Optimized Export Gate"
         unique_id: ev_sun_optimized_export_gate
         state: >
-          {{ states('input_number.ev_sun_optimized_latched_export_kw') | float(0) >= 4.125 }}
+          {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
+          {% set threshold = 11 / 16 * min_amp %}
+          {{ states('input_number.ev_sun_optimized_latched_export_kw') | float(0) >= threshold }}
+
         attributes:
           latched_export_kw: >
             {{ states('input_number.ev_sun_optimized_latched_export_kw') | float(0) | round(2) }}
-          threshold_kw: 4.125
+
+          min_ampere: >
+            {{ states('input_number.ev_min_charge_ampere') | int(7) }}
+
+          threshold_kw: >
+            {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
+            {{ (11 / 16 * min_amp) | round(2) }}
+
           reason: >
+            {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
+            {% set threshold = 11 / 16 * min_amp %}
             {% set export = states('input_number.ev_sun_optimized_latched_export_kw') | float(0) %}
-            {% if export >= 4.125 %}
-              Last known export can support at least 6A
+            {% if export >= threshold %}
+              Last known export can support minimum {{ min_amp }}A
             {% else %}
-              Last known export cannot support 6A
-            {% endif %}  
+              Last known export cannot support minimum {{ min_amp }}A
+            {% endif %}
 
       
 # 2. Kommandoen der styrer ampere 
@@ -2296,6 +2285,21 @@ rest:
           - enable_sell_to_grid
           - enable_idle
           - enable_locked
+
+shell_command:
+  ev_append_segment_csv: >-
+    bash -c 'mkdir -p /config/ev_logs;
+    if [ ! -f /config/ev_logs/ev_segments.csv ]; then
+      echo "type,start,end,mode,ampere,kwh,session_energy,start_soc,target_soc,battery_kwh" > /config/ev_logs/ev_segments.csv;
+    fi;
+    echo "{{ line }}" >> /config/ev_logs/ev_segments.csv'
+
+  ev_append_session_csv: >-
+    bash -c 'mkdir -p /config/ev_logs;
+    if [ ! -f /config/ev_logs/ev_sessions.csv ]; then
+      echo "type,start,end,mode,total_kwh,max_ampere,start_soc,target_soc,battery_kwh" > /config/ev_logs/ev_sessions.csv;
+    fi;
+    echo "{{ line }}" >> /config/ev_logs/ev_sessions.csv'          
   
       
   

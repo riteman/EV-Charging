@@ -240,3 +240,27 @@ intellicharge_apply_allow:
         entity_id: input_datetime.ev_intellicharge_last_change
       data:
         datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+ev_log_segment_csv:
+  alias: EV - Log segment CSV
+  mode: queued
+  fields:
+    line:
+      description: CSV line
+  sequence:
+    - action: shell_command.ev_append_segment_csv
+      data:
+        line: "{{ line }}"
+
+ev_log_session_csv:
+  alias: EV - Log session CSV
+  mode: queued
+  fields:
+    line:
+      description: CSV line
+  sequence:
+    - action: shell_command.ev_append_session_csv
+      data:
+        line: "{{ line }}"     
+
+        
