@@ -311,6 +311,7 @@ sensor:
       method: trapezoidal
       
 template:
+
     - sensor:    
       - name: "Shelly Grid Power Raw"
         unique_id: shelly_grid_power_raw
@@ -701,6 +702,7 @@ template:
           {% set effective = states('sensor.ev_target_ampere_effective') | int(0) %}
           {% set next_window = states('sensor.ev_next_charge_window_real') %}
           {% set ns = namespace(active_window=false, future_window=false) %}
+          {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
 
           {% if next_window not in ['unknown', 'unavailable', '', '-', 'none'] and '-' in next_window %}
             {% set start_txt = next_window.split('-')[0].strip() %}
@@ -729,7 +731,7 @@ template:
           {% elif mode == 'Sun Optimized' %}
             {% if currently_charging %}
               LAD
-            {% elif raw >= 6 %}
+            {% elif raw >= min_amp %}
               LAD
             {% else %}
               VENT
@@ -740,9 +742,9 @@ template:
             LAD
           {% elif currently_charging %}
             LAD
-          {% elif raw >= 6 %}
+          {% elif raw >= min_amp %}
             LAD
-          {% elif effective >= 6 %}
+          {% elif effective >= min_amp %}
             LAD
           {% elif ns.active_window %}
             LAD
@@ -764,6 +766,7 @@ template:
             {% set effective = states('sensor.ev_target_ampere_effective') | int(0) %}
             {% set next_window = states('sensor.ev_next_charge_window_real') %}
             {% set ns = namespace(active_window=false, future_window=false) %}
+            {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
 
             {% if next_window not in ['unknown', 'unavailable', '', '-', 'none'] and '-' in next_window %}
               {% set start_txt = next_window.split('-')[0].strip() %}
@@ -791,7 +794,7 @@ template:
               Charge Now
             {% elif mode == 'Sun Optimized' and currently_charging %}
               Sun Optimized charging
-            {% elif mode == 'Sun Optimized' and raw >= 6 %}
+            {% elif mode == 'Sun Optimized' and raw >= min_amp %}
               Sun Optimized solar average allows charging
             {% elif mode == 'Sun Optimized' %}
               Sun Optimized waiting for solar
@@ -799,9 +802,9 @@ template:
               Deadline
             {% elif currently_charging %}
               Charging now
-            {% elif raw >= 6 %}
+            {% elif raw >= min_amp %}
               Raw ampere allows charging
-            {% elif effective >= 6 %}
+            {% elif effective >= min_amp %}
               Effective ampere allows charging
             {% elif ns.active_window %}
               Active charge window
@@ -933,12 +936,13 @@ template:
           {% set session = is_state('input_boolean.ev_session_active', 'on') %}
           {% set cable = is_state('binary_sensor.ev_cable_connected_effective', 'on') %}
           {% set complete = is_state('binary_sensor.ev_session_complete', 'on') %}
+          {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
 
           {% if not enabled or not cable or not session or complete or decision != 'LAD' %}
             STOP
           {% elif amp >= 16 %}
             FULL
-          {% elif amp >= 6 %}
+          {% elif amp >= min_amp %}
             REDUCED
           {% else %}
             STOP
@@ -1218,7 +1222,7 @@ template:
 
             {% if mode == 'Charge Now' %}
               Charge Now → 16A
-            {% elif mode == 'Sun Optimized' and A >= 6 %}
+            {% elif mode == 'Sun Optimized' and A >= min_amp %}
               Sun Optimized from 15m solar average
             {% elif mode == 'Sun Optimized' %}
               Sun Optimized waiting for >= {{ min_amp }}A solar average
@@ -1228,7 +1232,7 @@ template:
               Slot charging without solar → 16A
             {% elif X <= 0 %}
               No solar → no charging
-            {% elif A < 6 %}
+            {% elif A < min_amp %}
               Solar insufficient vs target price
             {% else %}
               Solar meets target price
@@ -1241,14 +1245,15 @@ template:
           {% set raw = states('sensor.ev_target_ampere_raw') | int(0) %}
           {% set old = states('input_number.ev_last_sent_ampere') | int(0) %}
           {% set mode = states('input_select.ev_charge_mode') %}
+          {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
 
           {% if mode == 'Charge Now' %}
             {{ raw }}
           {% elif raw == 0 %}
             0
-          {% elif old < 6 and raw >= 6 %}
+          {% elif old < min_amp and raw >= min_amp %}
             {{ raw }}
-          {% elif old >= 6 and raw == 0 %}
+          {% elif old >= min_amp and raw == 0 %}
             0
           {% elif (raw - old) | abs >= 2 %}
             {{ raw }}
@@ -1267,14 +1272,15 @@ template:
             {% set raw = states('sensor.ev_target_ampere_raw') | int(0) %}
             {% set old = states('input_number.ev_last_sent_ampere') | int(0) %}
             {% set mode = states('input_select.ev_charge_mode') %}
+            {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
 
             {% if mode == 'Charge Now' %}
               Charge Now bypass
             {% elif raw == 0 %}
               Stop request
-            {% elif old < 6 and raw >= 6 %}
+            {% elif old < min_amp and raw >= min_amp %}
               Start allowed immediately
-            {% elif old >= 6 and raw == 0 %}
+            {% elif old >= min_amp and raw == 0 %}
               Stop allowed immediately
             {% elif (raw - old) | abs >= 2 %}
               Delta large enough
@@ -1321,8 +1327,9 @@ template:
           {% set price = states('sensor.stromligning_current_price_vat') | float(0) %}
           {% set solar_kw = states('sensor.ev_solar_surplus_before_car') | float(0) %}
           {% set charger_power = 11 * (amp / 16) %}
+          {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
 
-          {% if amp < 6 or charger_power <= 0 %}
+          {% if amp < min_amp or charger_power <= 0 %}
             {{ price | round(3) }}
           {% else %}
             {% set solar_used = [solar_kw, charger_power] | min %}
@@ -1345,8 +1352,9 @@ template:
           {% set amp = states('sensor.ev_target_ampere_effective') | float(0) %}
           {% set solar_kw = states('sensor.ev_solar_surplus_before_car') | float(0) %}
           {% set charger_power = 11 * (amp / 16) %}
+          {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
 
-          {% if amp < 6 or charger_power <= 0 %}
+          {% if amp < min_amp or charger_power <= 0 %}
             0
           {% else %}
             {{ [solar_kw, charger_power] | min | round(2) }}
@@ -1363,7 +1371,9 @@ template:
             {% set amp = states('sensor.ev_target_ampere_effective') | float(0) %}
             {% set solar_kw = states('sensor.ev_solar_surplus_before_car') | float(0) %}
             {% set charger_power = 11 * (amp / 16) %}
-            {% if amp >= 6 and charger_power > 0 %}
+            {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
+
+            {% if amp >= min_amp and charger_power > 0 %}
               {{ ([solar_kw, charger_power] | min / charger_power) | round(3) }}
             {% else %}
               0
@@ -1834,6 +1844,7 @@ template:
             {% set session_target = states('input_number.ev_session_target_soc') | float(0) %}
             {% set target = car_target if car_target > 0 else session_target %}
             {% set target_reached = target > 0 and soc >= (target - 0.5) %}
+            {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
 
             {% if target_reached and mode in ['Auto', 'Charge Now', 'Sun Optimized'] %}
               Bilen har nået target SOC.
@@ -1841,7 +1852,7 @@ template:
               Bilen lader fysisk lige nu.
             {% elif start_delay %}
               Systemet har besluttet at lade og afventer start-delay.
-            {% elif decision == 'LAD' and effective < 6 %}
+            {% elif decision == 'LAD' and effective < min_amp %}
               Systemet vil gerne lade, men den effektive ampere er under minimum {{ min_amp }}A.
             {% elif decision == 'LAD' and charger_on and no_current_reason == 'pending_authorization' %}
               Laderen er klar, men bilen har endnu ikke godkendt opladningen.
@@ -1849,7 +1860,7 @@ template:
               Laderen er aktiveret, men der måles ingen reel ladeeffekt.
             {% elif decision == 'LAD' and m != 'OK' %}
               Systemet vil gerne lade, men mindst ét krav er ikke opfyldt: {{ m }}
-            {% elif decision == 'LAD' and raw >= 6 and stable >= 6 and effective >= 6 %}
+            {% elif decision == 'LAD' and raw >= min_amp and stable >= min_amp and effective >= min_amp %}
               Systemet vil gerne lade og har gyldig ampere, men afventer at startflowet materialiserer sig.
             {% elif mode == 'Sun Optimized' and decision == 'VENT' %}
               Systemet er i Sun Optimized og venter på tilstrækkelig sol til minimum {{ states('input_number.ev_min_charge_ampere') | int(7) }}A.
@@ -2003,6 +2014,25 @@ template:
             Keep Smart
           {% endif %}           
       
+      - name: "EV Session Start SOC View"
+        unique_id: ev_session_start_soc_view
+        state: "{{ states('input_number.ev_session_start_soc') }}"
+        unit_of_measurement: "%"
+
+      - name: "EV Session Target SOC View"
+        unique_id: ev_session_target_soc_view
+        state: "{{ states('input_number.ev_session_target_soc') }}"
+        unit_of_measurement: "%"
+
+      - name: "EV Session Battery kWh View"
+        unique_id: ev_session_battery_kwh_view
+        state: "{{ states('input_number.ev_session_battery_kwh') }}"
+        unit_of_measurement: "kWh"
+
+      - name: "EV Session Latched Energy View"
+        unique_id: ev_session_latched_energy_view
+        state: "{{ states('input_number.ev_session_energy_latched_kwh') }}"
+        unit_of_measurement: "kWh"
 
         
  # -----------------------------------------------------------------------------
@@ -2046,20 +2076,28 @@ template:
           {% set ha = is_state('input_boolean.ev_ha_control_enabled', 'on') %}
           {% set session = is_state('input_boolean.ev_session_active', 'on') %}
           {% set cable = is_state('binary_sensor.ev_cable_connected_effective', 'on') %}
-          {% set gate = is_state('binary_sensor.ev_sun_optimized_export_gate', 'on') %}
-          {% set charging = states('sensor.eh45khwp_power') | float(0) > 0.5 %}
-          {% set decision = states('sensor.ev_charge_decision') %}
+          {% set remaining = states('sensor.ev_remaining_energy_live_kwh') | float(0) %}
+          {% set now_ts = as_timestamp(now()) %}
+          {% set horizon_ts = now_ts + 2 * 3600 %}
+          {% set prices = (state_attr('sensor.stromligning_current_price_vat', 'prices') or [])
+            + (state_attr('binary_sensor.stromligning_tomorrow_available_vat', 'prices') or []) %}
+          {% set ns = namespace(negative_soon=false) %}
+
+          {% for item in prices %}
+            {% set start_ts = as_timestamp(item.start) %}
+            {% set price = item.price | float(999) %}
+            {% if start_ts is not none and start_ts >= now_ts and start_ts <= horizon_ts and price < 0 %}
+              {% set ns.negative_soon = true %}
+            {% endif %}
+          {% endfor %}
 
           {{
             ha
             and session
             and cable
             and mode != 'Stop'
-            and (
-              gate
-              or charging
-              or decision == 'LAD'
-            )
+            and remaining > 0.1
+            and ns.negative_soon
           }}
 
         attributes:
@@ -2067,9 +2105,9 @@ template:
           ha_control: "{{ states('input_boolean.ev_ha_control_enabled') }}"
           session_active: "{{ states('input_boolean.ev_session_active') }}"
           cable_connected: "{{ states('binary_sensor.ev_cable_connected_effective') }}"
-          gate: "{{ states('binary_sensor.ev_sun_optimized_export_gate') }}"
-          latched_export_kw: "{{ states('input_number.ev_sun_optimized_latched_export_kw') }}"
-          current_export_kw: "{{ states('sensor.grid_export_power_average_2m_safe') }}"
+          remaining_kwh: "{{ states('sensor.ev_remaining_energy_live_kwh') }}"
+          current_price: "{{ states('sensor.stromligning_current_price_vat') }}"
+          forecast_horizon_hours: 2
           charging: "{{ states('sensor.eh45khwp_power') | float(0) > 0.5 }}"
           decision: "{{ states('sensor.ev_charge_decision') }}"
           reason: >
@@ -2077,9 +2115,22 @@ template:
             {% set ha = is_state('input_boolean.ev_ha_control_enabled', 'on') %}
             {% set session = is_state('input_boolean.ev_session_active', 'on') %}
             {% set cable = is_state('binary_sensor.ev_cable_connected_effective', 'on') %}
-            {% set gate = is_state('binary_sensor.ev_sun_optimized_export_gate', 'on') %}
-            {% set charging = states('sensor.eh45khwp_power') | float(0) > 0.5 %}
-            {% set decision = states('sensor.ev_charge_decision') %}
+            {% set remaining = states('sensor.ev_remaining_energy_live_kwh') | float(0) %}
+            {% set now_ts = as_timestamp(now()) %}
+            {% set horizon_ts = now_ts + 2 * 3600 %}
+            {% set prices = (state_attr('sensor.stromligning_current_price_vat', 'prices') or [])
+              + (state_attr('binary_sensor.stromligning_tomorrow_available_vat', 'prices') or []) %}
+            {% set ns = namespace(negative_soon=false, next_start='-', next_price='-') %}
+
+            {% for item in prices %}
+              {% set start_ts = as_timestamp(item.start) %}
+              {% set price = item.price | float(999) %}
+              {% if start_ts is not none and start_ts >= now_ts and start_ts <= horizon_ts and price < 0 and not ns.negative_soon %}
+                {% set ns.negative_soon = true %}
+                {% set ns.next_start = start_ts | timestamp_custom('%Y-%m-%d %H:%M') %}
+                {% set ns.next_price = price | round(3) %}
+              {% endif %}
+            {% endfor %}
 
             {% if not ha %}
               HA control off
@@ -2089,14 +2140,12 @@ template:
               Cable not connected
             {% elif mode == 'Stop' %}
               Stop mode
-            {% elif charging %}
-              Already charging, keep inverter available
-            {% elif decision == 'LAD' %}
-              EV decision is LAD, keep inverter available
-            {% elif gate %}
-              Latched export can support at least 6A
+            {% elif remaining <= 0.1 %}
+              No remaining energy to charge
+            {% elif ns.negative_soon %}
+              Negative price forecast within 2 hours: {{ ns.next_start }} at {{ ns.next_price }}
             {% else %}
-              No reason to force inverter open
+              No negative price forecast within 2 hours
             {% endif %}
 
       - name: "EV Ampere Update Allowed"
