@@ -14,40 +14,26 @@ ev_charge_start:
       target:
         entity_id: input_boolean.ev_charger_transition_active
 
-    # 1. Sæt ampere før start
-    - action: script.ev_set_target_ampere
-      data:
-        ampere: "{{ target_ampere }}"
-
-    - delay: "00:00:05"
-
-    # 2. Ryd gammel handshake/lade-state
-    - action: switch.turn_off
-      target:
-        entity_id: switch.eh45khwp_charger_enabled
-
-    - delay: "00:00:10"
-
-    # 3. Sæt ampere igen efter stop
-    - action: script.ev_set_target_ampere
-      data:
-        ampere: "{{ target_ampere }}"
-
-    - delay: "00:00:05"
-
-    # 4. Aktiver lader
+    # 1. Easee må ikke stå disabled mens bilen forsøger handshake
     - action: switch.turn_on
       target:
         entity_id: switch.eh45khwp_charger_enabled
 
     - delay: "00:00:05"
 
-    # 5. Send egentlig Easee start_charging
+    # 2. Sæt ampere mens ladeboksen er enabled
+    - action: script.ev_set_target_ampere
+      data:
+        ampere: "{{ target_ampere }}"
+
+    - delay: "00:00:05"
+
+    # 3. Send Easee start_charging
     - action: rest_command.easee_start_charging
 
     - delay: "00:00:30"
 
-    # 6. Retry hvis Easee hænger i "Venter på godkendelse"
+    # 4. Retry uden at disable ladeboksen
     - repeat:
         count: 3
         sequence:
@@ -57,29 +43,17 @@ ev_charge_start:
                   {{
                     states('sensor.eh45khwp_power') | float(0) < 0.5
                     and states('sensor.eh45khwp_status') in
-                    ['Venter på godkendelse', 'Waiting for authorization']
+                    ['Venter på godkendelse', 'Waiting for authorization', 'Afventer bil']
                   }}
             then:
               - action: logbook.log
                 data:
                   name: EV
                   message: >
-                    Start retry {{ repeat.index }}
+                    Start retry {{ repeat.index }} uden disable
                     (status={{ states('sensor.eh45khwp_status') }},
                     power={{ states('sensor.eh45khwp_power') }},
                     amp={{ target_ampere }})
-
-              - action: switch.turn_off
-                target:
-                  entity_id: switch.eh45khwp_charger_enabled
-
-              - delay: "00:00:12"
-
-              - action: script.ev_set_target_ampere
-                data:
-                  ampere: "{{ target_ampere }}"
-
-              - delay: "00:00:05"
 
               - action: switch.turn_on
                 target:
@@ -87,9 +61,35 @@ ev_charge_start:
 
               - delay: "00:00:05"
 
+              - action: script.ev_set_target_ampere
+                data:
+                  ampere: "{{ target_ampere }}"
+
+              - delay: "00:00:05"
+
               - action: rest_command.easee_start_charging
 
               - delay: "00:00:30"
+
+    # 5. Fail-safe: efterlad altid Easee enabled
+    - action: switch.turn_on
+      target:
+        entity_id: switch.eh45khwp_charger_enabled
+
+    - action: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.ev_charger_transition_active
+
+    - action: logbook.log
+      data:
+        name: EV
+        entity_id: switch.eh45khwp_charger_enabled
+        message: >
+          Easee startsekvens afsluttet
+          (status={{ states('sensor.eh45khwp_status') }},
+          power={{ states('sensor.eh45khwp_power') }},
+          amp={{ target_ampere }},
+          enabled={{ states('switch.eh45khwp_charger_enabled') }})
 
     - action: input_boolean.turn_off
       target:
@@ -109,18 +109,23 @@ ev_charge_stop:
   alias: EV Charge Stop
   mode: single
   sequence:
-    - service: rest_command.easee_stop_charging
+    - action: rest_command.easee_stop_charging
 
     - delay: "00:00:02"
 
-    - service: switch.turn_off
+    # Easee efterlades enabled, så bilen stadig kan handshake
+    - action: switch.turn_on
       target:
         entity_id: switch.eh45khwp_charger_enabled
 
     - action: logbook.log
       data:
         name: EV
-        message: "Easee stop_charging sendt og lader stoppet"           
+        message: >
+          Easee stop_charging sendt
+          (charger efterladt enabled={{ states('switch.eh45khwp_charger_enabled') }},
+          status={{ states('sensor.eh45khwp_status') }},
+          power={{ states('sensor.eh45khwp_power') }})  
         
 ev_set_manual_ampere:
   alias: EV - Set manual ampere

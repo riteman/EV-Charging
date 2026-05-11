@@ -742,9 +742,8 @@ template:
             LAD
           {% elif currently_charging %}
             LAD
-          {% elif raw >= min_amp %}
-            LAD
-          {% elif effective >= min_amp %}
+          {% elif states('sensor.ev_virtual_day_price_dynamic') | float(99)
+                  <= states('sensor.ev_night_reference_price_real') | float(0) %}
             LAD
           {% elif ns.active_window %}
             LAD
@@ -802,10 +801,9 @@ template:
               Deadline
             {% elif currently_charging %}
               Charging now
-            {% elif raw >= min_amp %}
-              Raw ampere allows charging
-            {% elif effective >= min_amp %}
-              Effective ampere allows charging
+            {% elif states('sensor.ev_virtual_day_price_dynamic') | float(99)
+                    <= states('sensor.ev_night_reference_price_real') | float(0) %}
+               Virtual price below reference
             {% elif ns.active_window %}
               Active charge window
             {% elif ns.future_window %}
