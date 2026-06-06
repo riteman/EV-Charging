@@ -1,0 +1,3 @@
+  ev_solar_energy_to_car_estimate_today:
+    source: sensor.ev_solar_energy_to_car_estimate
+    cycle: daily

@@ -3,10 +3,7 @@ default_config:
 
 logbook:
 
-utility_meter:
-  ev_solar_energy_to_car_estimate_today:
-    source: sensor.ev_solar_energy_to_car_estimate
-    cycle: daily
+utility_meter: !include sensors/utility_meters.yaml
 
 # Load frontend themes from the themes folder
 frontend:
@@ -219,6 +216,14 @@ input_number:
     initial: 10
     mode: box  
 
+  ev_session_easee_start_energy_kwh:
+    name: EV Session Easee Start Energy
+    min: 0
+    max: 1000
+    step: 0.01
+    unit_of_measurement: "kWh"
+    mode: box  
+
   ev_last_sent_ampere:
     name: EV Last Sent Ampere
     min: 0
@@ -415,6 +420,13 @@ template:
             {{ states('input_number.ev_charge_power_kw') | float(11) | round(2) }}
 
           efficiency: 0.92
+
+          display_hhmm: >
+            {% set hours = this.state | float(0) %}
+            {% set total_minutes = (hours * 60) | round(0) | int %}
+            {% set h = total_minutes // 60 %}
+            {% set m = total_minutes % 60 %}
+            {{ '%02d:%02d' | format(h, m) }}
 
       - name: "EV Hours Until Ready"
         unique_id: ev_hours_until_ready
@@ -1291,55 +1303,76 @@ template:
         unique_id: ev_target_ampere_effective
         unit_of_measurement: "A"
         state: >
-          {% set new = states('sensor.ev_target_ampere_stable') | int(0) %}
-          {% set old = states('input_number.ev_last_sent_ampere') | int(0) %}
+          {% set mode = states('input_select.ev_charge_mode') %}
+          {% set decision = states('sensor.ev_charge_decision') %}
+          {% set ready = is_state('binary_sensor.ev_ready_to_charge', 'on') %}
+          {% set session = is_state('input_boolean.ev_session_active', 'on') %}
+          {% set complete = is_state('binary_sensor.ev_session_complete', 'on') %}
           {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
+          {% set old = states('input_number.ev_last_sent_ampere') | int(0) %}
           {% set last = states.input_number.ev_last_sent_ampere.last_changed %}
           {% set age_ok = (as_timestamp(now()) - as_timestamp(last)) > 900 %}
-          {% set delta_ok = (new - old) | abs >= 2 %}
-          {% set mode = states('input_select.ev_charge_mode') %}
+          {% set solar_new = states('sensor.ev_target_ampere_stable') | int(0) %}
+          {% set fixed_amp = 16 %}
 
-          {% if mode == 'Charge Now' %}
-            16
-          {% elif new > 0 and new < min_amp %}
+          {% if mode == 'Stop' or not ready or not session or complete or decision != 'LAD' %}
             0
-          {% elif old == 0 and new >= min_amp %}
-            {{ new }}
-          {% elif old > 0 and old < min_amp %}
-            {{ new if new >= min_amp else 0 }}
-          {% elif age_ok and delta_ok %}
-            {{ new }}
+
+          {% elif mode == 'Sun Optimized' %}
+            {% set new = solar_new %}
+            {% set delta_ok = (new - old) | abs >= 2 %}
+
+            {% if new > 0 and new < min_amp %}
+              0
+            {% elif old == 0 and new >= min_amp %}
+              {{ new }}
+            {% elif old > 0 and old < min_amp %}
+              {{ new if new >= min_amp else 0 }}
+            {% elif age_ok and delta_ok %}
+              {{ new }}
+            {% else %}
+              {{ old }}
+            {% endif %}
+
+          {% elif mode in ['Auto', 'Monta Guest', 'Charge Now'] %}
+            {{ fixed_amp }}
+
           {% else %}
-            {{ old }}
+            0
           {% endif %}
+
         attributes:
           model: "MODEL B"
-          new_stable_ampere: "{{ states('sensor.ev_target_ampere_stable') }}"
+          mode: "{{ states('input_select.ev_charge_mode') }}"
+          decision: "{{ states('sensor.ev_charge_decision') }}"
+          ready_to_charge: "{{ states('binary_sensor.ev_ready_to_charge') }}"
+          session_active: "{{ states('input_boolean.ev_session_active') }}"
+          session_complete: "{{ states('binary_sensor.ev_session_complete') }}"
+          solar_stable_ampere: "{{ states('sensor.ev_target_ampere_stable') }}"
           last_sent_ampere: "{{ states('input_number.ev_last_sent_ampere') }}"
           min_ampere: "{{ states('input_number.ev_min_charge_ampere') }}"
+          fixed_ampere: 16
           age_ok: >
             {% set last = states.input_number.ev_last_sent_ampere.last_changed %}
             {{ (as_timestamp(now()) - as_timestamp(last)) > 900 }}
-          delta_ok: >
-            {% set new = states('sensor.ev_target_ampere_stable') | int(0) %}
-            {% set old = states('input_number.ev_last_sent_ampere') | int(0) %}
-            {{ (new - old) | abs >= 2 }}
           reason: >
-            {% set new = states('sensor.ev_target_ampere_stable') | int(0) %}
-            {% set old = states('input_number.ev_last_sent_ampere') | int(0) %}
-            {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
-            {% if states('input_select.ev_charge_mode') == 'Charge Now' %}
-              Charge Now forces 16A
-            {% elif new > 0 and new < min_amp %}
-              New ampere below minimum
-            {% elif old == 0 and new >= min_amp %}
-              Start from 0A allowed immediately
-            {% elif old > 0 and old < min_amp %}
-              Recovering from invalid old ampere
-            {% elif (new - old) | abs >= 2 %}
-              Delta large enough and age gate passed
+            {% set mode = states('input_select.ev_charge_mode') %}
+            {% if mode == 'Stop' %}
+              Stop mode forces 0A
+            {% elif not is_state('binary_sensor.ev_ready_to_charge', 'on') %}
+              Not ready to charge
+            {% elif not is_state('input_boolean.ev_session_active', 'on') %}
+              Session not active
+            {% elif is_state('binary_sensor.ev_session_complete', 'on') %}
+              Session complete
+            {% elif states('sensor.ev_charge_decision') != 'LAD' %}
+              Decision is not LAD
+            {% elif mode == 'Sun Optimized' %}
+              Sun Optimized uses solar-based ampere with hysteresis
+            {% elif mode in ['Auto', 'Monta Guest', 'Charge Now'] %}
+              Fixed 16A for non-solar charge mode
             {% else %}
-              Holding last sent ampere
+              Unknown mode
             {% endif %}
           
       - name: "EV Ready Time Debug"
@@ -2103,11 +2136,19 @@ template:
         unique_id: ev_calculated_soc
         unit_of_measurement: "%"
         state: >
-          {# MODEL B - beregner SOC ud fra session start-SOC og HA-latchet leveret energi #}
+          {# MODEL B - beregner SOC ud fra fastlåst session start-SOC og HA-latchet leveret energi #}
 
-          {% set start_soc = states('input_number.ev_guest_planned_start_soc') | float(0) %}
-          {% set battery_kwh = states('input_number.ev_guest_planned_battery_kwh') | float(77) %}
+          {% set session_active = is_state('input_boolean.ev_session_active', 'on') %}
+          {% set session_start_soc = states('input_number.ev_session_start_soc') | float(0) %}
+          {% set planned_start_soc = states('input_number.ev_guest_planned_start_soc') | float(0) %}
+          {% set battery_kwh = states('input_number.ev_session_battery_kwh') | float(77) %}
           {% set delivered_kwh = states('input_number.ev_session_energy_latched_kwh') | float(0) %}
+
+          {% if session_active %}
+            {% set start_soc = session_start_soc %}
+          {% else %}
+            {% set start_soc = planned_start_soc %}
+          {% endif %}
 
           {% if battery_kwh > 0 %}
             {{ [start_soc + (delivered_kwh / battery_kwh * 100), 100] | min | round(1) }}
@@ -2116,11 +2157,19 @@ template:
           {% endif %}
 
         attributes:
-          start_soc: "{{ states('input_number.ev_guest_planned_start_soc') }}"
-          battery_kwh: "{{ states('input_number.ev_guest_planned_battery_kwh') }}"
+          model: "MODEL B"
+          source: >
+            {% if is_state('input_boolean.ev_session_active', 'on') %}
+              session_start_soc_plus_latched_energy
+            {% else %}
+              guest_start_soc_plus_latched_energy
+            {% endif %}
+          session_active: "{{ states('input_boolean.ev_session_active') }}"
+          session_start_soc: "{{ states('input_number.ev_session_start_soc') }}"
+          planned_start_soc: "{{ states('input_number.ev_guest_planned_start_soc') }}"
+          battery_kwh: "{{ states('input_number.ev_session_battery_kwh') }}"
           delivered_latched_kwh: "{{ states('input_number.ev_session_energy_latched_kwh') }}"
           vw_soc_debug: "{{ states('sensor.battery_level') }}"
-          source: "guest_start_soc_plus_latched_energy"
 
       - name: "EV Effective SOC"
         unique_id: ev_effective_soc
@@ -2205,10 +2254,34 @@ template:
       - name: "EV Cable Connected Effective"
         unique_id: ev_cable_connected_effective
         state: >
+          {# MODEL B - biluafhængig kabeldetektion #}
+
+          {% set vw_cable = is_state('binary_sensor.charging_cable_connected', 'on') %}
+          {% set simulation = is_state('input_boolean.ev_simulation_mode', 'on') %}
+
+          {% set easee_status = states('sensor.eh45khwp_status') | lower %}
+          {% set easee_cable_states = [
+            'awaiting_start',
+            'charging',
+            'completed',
+            'ready_to_charge',
+            'waiting_for_authorization',
+            'charger_limited',
+            'car_connected',
+            'connected'
+          ] %}
+
           {{
-            is_state('binary_sensor.charging_cable_connected', 'on')
-            or is_state('input_boolean.ev_simulation_mode', 'on')
+            vw_cable
+            or simulation
+            or easee_status in easee_cable_states
           }}
+
+        attributes:
+          model: "MODEL B"
+          vw_cable_connected: "{{ states('binary_sensor.charging_cable_connected') }}"
+          easee_status: "{{ states('sensor.eh45khwp_status') }}"
+          simulation_mode: "{{ states('input_boolean.ev_simulation_mode') }}"
           
       - name: "EV Export Price Positive"
         unique_id: ev_export_price_positive
