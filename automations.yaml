@@ -459,7 +459,10 @@
 
 - id: 'ev_apply_target_ampere'
   alias: EV - Apply target ampere
-  description: 'Vedligeholder ampere under aktiv/relevant opladning, men starter ikke ladning i sig selv'
+  description: >
+    MODEL B - Vedligeholder Easee ampere under aktiv/relevant opladning.
+    Starter ikke ladning i sig selv, men sikrer at mode-skift til Auto,
+    Monta Guest, Sun Optimized og Charge Now sender korrekt ampere til Easee.
   triggers:
     - trigger: state
       entity_id:
@@ -477,7 +480,25 @@
     - trigger: state
       entity_id:
         - input_select.ev_charge_mode
-      to: 'Charge Now'
+      to:
+        - 'Auto'
+        - 'Monta Guest'
+        - 'Sun Optimized'
+        - 'Charge Now'
+      for:
+        seconds: 10
+
+    - trigger: state
+      entity_id:
+        - sensor.ev_charge_decision
+      to: 'LAD'
+      for:
+        seconds: 10
+
+    - trigger: state
+      entity_id:
+        - binary_sensor.ev_ready_to_charge
+      to: 'on'
       for:
         seconds: 10
 
