@@ -185,6 +185,7 @@ ev_set_target_ampere:
     ampere:
       description: "Ampere to apply to Easee charger"
       example: 10
+
   sequence:
     - variables:
         requested_ampere: >
@@ -194,10 +195,12 @@ ev_set_target_ampere:
           {% else %}
             {{ states('sensor.ev_target_ampere_effective') | int(0) }}
           {% endif %}
+        min_amp: "{{ states('input_number.ev_min_charge_ampere') | int(7) }}"
+
     - condition: template
       value_template: >
-        {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
         {{ requested_ampere == 0 or (requested_ampere >= min_amp and requested_ampere <= 16) }}
+
     - if:
         - condition: template
           value_template: >
@@ -213,19 +216,59 @@ ev_set_target_ampere:
           target:
             entity_id: sensor.easee_api_access_token_final_2
         - delay: "00:00:03"
+
     - action: rest_command.set_ioniq_ampere
       data:
         ampere: "{{ requested_ampere }}"
-    - action: input_number.set_value
+
+    - delay: "00:00:08"
+
+    - action: homeassistant.update_entity
       target:
-        entity_id: input_number.ev_last_sent_ampere
-      data:
-        value: "{{ requested_ampere }}"
-    - action: logbook.log
-      data:
-        name: EV
-        entity_id: switch.eh45khwp_charger_enabled
-        message: "Ampere sat til {{ requested_ampere }} A"
+        entity_id: sensor.eh45khwp_dynamic_charger_limit
+
+    - delay: "00:00:03"
+
+    - variables:
+        easee_actual_ampere: "{{ states('sensor.eh45khwp_dynamic_charger_limit') | int(-1) }}"
+        easee_confirmed: >
+          {{
+            states('sensor.eh45khwp_dynamic_charger_limit') | int(-1)
+            ==
+            requested_ampere | int(0)
+          }}
+
+    - if:
+        - condition: template
+          value_template: "{{ easee_confirmed }}"
+      then:
+        - action: input_number.set_value
+          target:
+            entity_id: input_number.ev_last_sent_ampere
+          data:
+            value: "{{ requested_ampere }}"
+
+        - action: logbook.log
+          data:
+            name: EV
+            entity_id: switch.eh45khwp_charger_enabled
+            message: >
+              Ampere bekræftet af Easee:
+              requested={{ requested_ampere }} A,
+              actual={{ easee_actual_ampere }} A
+      else:
+        - action: logbook.log
+          data:
+            name: EV WARNING
+            entity_id: switch.eh45khwp_charger_enabled
+            message: >
+              Ampere IKKE bekræftet af Easee:
+              requested={{ requested_ampere }} A,
+              actual={{ easee_actual_ampere }} A,
+              target={{ states('sensor.ev_target_ampere_effective') }} A,
+              mode={{ states('input_select.ev_charge_mode') }},
+              status={{ states('sensor.eh45khwp_status') }},
+              reason={{ states('sensor.eh45khwp_reason_for_no_current') }}
 
 intellicharge_export_allow_always:
   alias: IntelliCharge Export Allow Always

@@ -1231,19 +1231,20 @@
     Energi beregnes som delta mellem Easees aktuelle session energy
     og Easees session energy ved HA-sessionstart.
     Hvis Easee session energy nulstilles undervejs, nulstilles HA-referencepunktet også.
+    Trigger kun på Easee session energy, ikke på ampere, for at undgå race condition ved sessionstart.
   triggers:
     - trigger: state
       entity_id:
         - sensor.eh45khwp_session_energy
 
-    - trigger: state
-      entity_id:
-        - sensor.ev_target_ampere_effective
-
   conditions:
     - condition: state
       entity_id: input_boolean.ev_session_active
       state: 'on'
+
+    - condition: template
+      value_template: >
+        {{ states('input_number.ev_session_easee_start_energy_kwh') not in ['unknown', 'unavailable', '', 'none'] }}
 
   actions:
     - variables:
@@ -1288,21 +1289,6 @@
 
     - if:
         - condition: template
-          value_template: >
-            {{
-              states('sensor.ev_target_ampere_effective') | int(0)
-              >
-              states('input_number.ev_session_max_ampere') | int(0)
-            }}
-      then:
-        - action: input_number.set_value
-          target:
-            entity_id: input_number.ev_session_max_ampere
-          data:
-            value: "{{ states('sensor.ev_target_ampere_effective') | int(0) }}"
-
-    - if:
-        - condition: template
           value_template: "{{ easee_reset_detected }}"
       then:
         - action: logbook.log
@@ -1322,20 +1308,20 @@
   alias: EV - Session rebaseline on manual start SOC change
   description: >
     MODEL B - Når manuel start-SOC ændres mens VW SOC er unavailable,
-    bruges den nye værdi straks som aktuel session-SOC.
+    bruges den nye værdi straks som aktuel SOC-baseline, hvis bilen ikke lader.
     Sessionens leverede energi nulstilles, og Easee-referencepunktet flyttes til aktuel Easee session energy.
   triggers:
     - trigger: state
       entity_id: input_number.ev_guest_planned_start_soc
 
   conditions:
-    - condition: state
-      entity_id: input_boolean.ev_session_active
-      state: 'on'
-
     - condition: template
       value_template: >
         {{ states('sensor.battery_level') in ['unknown', 'unavailable', '', 'none'] }}
+
+    - condition: numeric_state
+      entity_id: sensor.eh45khwp_power
+      below: 0.5
 
   actions:
     - variables:
@@ -1344,6 +1330,7 @@
         old_session_start_soc: "{{ states('input_number.ev_session_start_soc') | float(0) | round(1) }}"
         old_latched_energy: "{{ states('input_number.ev_session_energy_latched_kwh') | float(0) | round(2) }}"
         old_easee_start: "{{ states('input_number.ev_session_easee_start_energy_kwh') | float(0) | round(2) }}"
+        session_active: "{{ states('input_boolean.ev_session_active') }}"
 
     - action: input_number.set_value
       target:
@@ -1367,8 +1354,9 @@
       data:
         name: EV
         message: >
-          MODEL B: Session rebaselined after manual start SOC change
-          (old_start_soc={{ old_session_start_soc }},
+          MODEL B: Manual Start SOC rebaseline
+          (session_active={{ session_active }},
+          old_start_soc={{ old_session_start_soc }},
           new_start_soc={{ new_start_soc }},
           old_latched_energy={{ old_latched_energy }} kWh,
           old_easee_start={{ old_easee_start }} kWh,
@@ -1687,11 +1675,13 @@
     - delay: "00:00:45"
 
     # MODEL B: VW er kun debug/telemetry. Fejl her må ikke påvirke sessionens SOC.
-    - action: homeassistant.update_entity
-      target:
-        entity_id:
-          - sensor.battery_level
-          - sensor.battery_target_charge_level
+#VW update midlertidigt deaktiveret mens Volkswagen Connect er nede.
+# Model B bruger manuel Start SOC og Easee energy som fallback.
+#    - action: homeassistant.update_entity
+#      target:
+#        entity_id:
+#          - sensor.battery_level
+#          - sensor.battery_target_charge_level
 
     - delay: "00:00:15"
 
@@ -1796,7 +1786,9 @@
 
 - id: 'ev_init_session_when_ready'
   alias: EV - Init session when ready
-  description: "MODEL B: Initialiserer EV-session ud fra HA/effective data, ikke direkte VW-data"
+  description: >
+    MODEL B - Initialiserer EV-session fra direkte køretøjs-/fallback-kilder.
+    Låser start-SOC, target-SOC, batteristørrelse og Easee energy reference ved sessionstart.
 
   triggers:
     - trigger: state
@@ -1825,6 +1817,14 @@
         {{ states('input_select.ev_charge_mode') in
            ['Auto', 'Charge Now', 'Sun Optimized', 'Monta Guest'] }}
 
+    - condition: state
+      entity_id: binary_sensor.ev_cable_connected_effective
+      state: 'on'
+
+    - condition: template
+      value_template: >
+        {{ states('sensor.eh45khwp_status') != 'disconnected' }}
+
     - condition: template
       value_template: >
         {{ states('sensor.ev_remaining_energy_live_kwh') | float(0) > 0.5 }}
@@ -1833,14 +1833,33 @@
     - variables:
         mode: "{{ states('input_select.ev_charge_mode') }}"
         started_at: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+        easee_session_energy: "{{ states('sensor.eh45khwp_session_energy') | float(0) | round(2) }}"
+        initial_ampere: "{{ states('sensor.ev_target_ampere_effective') | int(0) }}"
 
-        start_soc: "{{ states('sensor.ev_effective_soc') | float(0) }}"
-        target_soc: "{{ states('sensor.ev_effective_target_soc') | float(80) }}"
-        battery_kwh: "{{ states('input_number.ev_guest_planned_battery_kwh') | float(77) }}"
+        start_soc: >
+          {% set vw_soc = states('sensor.battery_level') %}
+          {% set manual_soc = states('input_number.ev_guest_planned_start_soc') %}
+          {% if vw_soc not in ['unknown', 'unavailable', '', 'none'] %}
+            {{ vw_soc | float(0) | round(1) }}
+          {% else %}
+            {{ manual_soc | float(0) | round(1) }}
+          {% endif %}
+
+        target_soc: >
+          {% set vw_target = states('sensor.battery_target_charge_level') %}
+          {% set manual_target = states('input_number.ev_guest_planned_target_soc') %}
+          {% if vw_target not in ['unknown', 'unavailable', '', 'none'] %}
+            {{ vw_target | float(80) | round(1) }}
+          {% else %}
+            {{ manual_target | float(80) | round(1) }}
+          {% endif %}
+
+        battery_kwh: "{{ states('input_number.ev_guest_planned_battery_kwh') | float(77) | round(1) }}"
 
     - action: input_boolean.turn_off
       target:
         entity_id:
+          - input_boolean.ev_session_logged
           - input_boolean.ev_segment_open
           - input_boolean.ev_start_delay_active
 
@@ -1894,21 +1913,27 @@
 
     - action: input_number.set_value
       target:
+        entity_id: input_number.ev_session_easee_start_energy_kwh
+      data:
+        value: "{{ easee_session_energy }}"
+
+    - action: input_number.set_value
+      target:
         entity_id: input_number.ev_session_max_ampere
       data:
-        value: 0
+        value: "{{ initial_ampere }}"
 
     - action: input_number.set_value
       target:
         entity_id: input_number.ev_segment_start_energy_kwh
       data:
-        value: "{{ states('sensor.eh45khwp_session_energy') | float(0) | round(2) }}"
+        value: 0
 
     - action: input_number.set_value
       target:
         entity_id: input_number.ev_segment_ampere
       data:
-        value: "{{ states('sensor.ev_target_ampere_effective') | int(0) }}"
+        value: "{{ initial_ampere }}"
 
     - action: input_boolean.turn_on
       target:
@@ -1923,6 +1948,8 @@
           start_soc={{ start_soc }},
           target_soc={{ target_soc }},
           battery={{ battery_kwh }} kWh,
+          easee_start_energy={{ easee_session_energy }} kWh,
+          initial_ampere={{ initial_ampere }},
           ready_by={{ states('input_datetime.ev_session_ready_by') }},
           vw_soc={{ states('sensor.battery_level') }},
           vw_target={{ states('sensor.battery_target_charge_level') }})
@@ -1933,25 +1960,41 @@
   alias: EV - Session finish on logical stop
   description: >
     MODEL B - Afslutter EV-session ved logisk stop.
-    Skriver session CSV én gang, men nulstiller altid sessionflag når sessionen er færdig.
+    Skriver session CSV én gang, men nulstiller altid sessionflag når sessionen er færdig,
+    når Easee melder bilen frakoblet, eller når HA efter restart har gendannet en falsk aktiv session.
   triggers:
     - trigger: state
       entity_id: binary_sensor.ev_session_complete
       to: 'on'
       for:
         minutes: 1
+      id: session_complete
 
     - trigger: state
       entity_id: input_select.ev_charge_mode
       to: 'Stop'
+      id: mode_stop
 
     - trigger: state
       entity_id: binary_sensor.charging_cable_connected
       to: 'off'
+      id: vw_cable_off
 
     - trigger: state
       entity_id: input_boolean.ev_ha_control_enabled
       to: 'off'
+      id: ha_control_off
+
+    - trigger: state
+      entity_id: sensor.eh45khwp_status
+      to: 'disconnected'
+      for:
+        minutes: 1
+      id: easee_disconnected
+
+    - trigger: homeassistant
+      event: start
+      id: ha_start
 
   conditions:
     - condition: state
@@ -1959,18 +2002,41 @@
       state: 'on'
 
   actions:
+    - if:
+        - condition: template
+          value_template: "{{ trigger.id == 'ha_start' }}"
+      then:
+        - delay:
+            seconds: 30
+
     - variables:
+        trigger_reason: "{{ trigger.id | default('unknown') }}"
         ended_at: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
         started_at: "{{ states('input_datetime.ev_session_started_at') }}"
         mode: "{{ states('input_text.ev_session_mode_latched') }}"
         energy: "{{ states('input_number.ev_session_energy_latched_kwh') | float(0) | round(2) }}"
         already_logged: "{{ is_state('input_boolean.ev_session_logged', 'on') }}"
         has_energy: "{{ states('input_number.ev_session_energy_latched_kwh') | float(0) > 0.05 }}"
+        easee_disconnected_now: "{{ is_state('sensor.eh45khwp_status', 'disconnected') }}"
+        charger_power_zero: "{{ states('sensor.eh45khwp_power') | float(0) < 0.5 }}"
+        startup_cleanup: >
+          {{
+            trigger.id == 'ha_start'
+            and is_state('sensor.eh45khwp_status', 'disconnected')
+            and states('sensor.eh45khwp_power') | float(0) < 0.5
+          }}
+
+    - condition: template
+      value_template: >
+        {{
+          trigger_reason != 'ha_start'
+          or startup_cleanup
+        }}
 
     - if:
         - condition: template
           value_template: >
-            {{ not already_logged and has_energy }}
+            {{ not startup_cleanup and not already_logged and has_energy }}
       then:
         - action: input_datetime.set_datetime
           target:
@@ -2008,11 +2074,14 @@
         name: EV
         message: >
           MODEL B: Session afsluttet
-          (trigger={{ trigger.entity_id }},
+          (trigger={{ trigger_reason }},
           mode={{ mode }},
           energy={{ energy }} kWh,
-          csv_logged={{ not already_logged and has_energy }},
+          csv_logged={{ not startup_cleanup and not already_logged and has_energy }},
+          startup_cleanup={{ startup_cleanup }},
           session_logged_before={{ already_logged }},
+          easee_status={{ states('sensor.eh45khwp_status') }},
+          power={{ states('sensor.eh45khwp_power') }} kW,
           start={{ started_at }},
           end={{ ended_at }})
 

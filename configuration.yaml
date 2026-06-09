@@ -2136,7 +2136,7 @@ template:
         unique_id: ev_calculated_soc
         unit_of_measurement: "%"
         state: >
-          {# MODEL B - beregner SOC ud fra fastlåst session start-SOC og HA-latchet leveret energi #}
+          {# MODEL B - beregner SOC ud fra session start-SOC og HA-latchet energi kun under aktiv session #}
 
           {% set session_active = is_state('input_boolean.ev_session_active', 'on') %}
           {% set session_start_soc = states('input_number.ev_session_start_soc') | float(0) %}
@@ -2144,16 +2144,12 @@ template:
           {% set battery_kwh = states('input_number.ev_session_battery_kwh') | float(77) %}
           {% set delivered_kwh = states('input_number.ev_session_energy_latched_kwh') | float(0) %}
 
-          {% if session_active %}
-            {% set start_soc = session_start_soc %}
+          {% if session_active and battery_kwh > 0 %}
+            {{ [session_start_soc + (delivered_kwh / battery_kwh * 100), 100] | min | round(1) }}
+          {% elif session_active %}
+            {{ session_start_soc | round(1) }}
           {% else %}
-            {% set start_soc = planned_start_soc %}
-          {% endif %}
-
-          {% if battery_kwh > 0 %}
-            {{ [start_soc + (delivered_kwh / battery_kwh * 100), 100] | min | round(1) }}
-          {% else %}
-            {{ start_soc | round(1) }}
+            {{ planned_start_soc | round(1) }}
           {% endif %}
 
         attributes:
@@ -2162,7 +2158,7 @@ template:
             {% if is_state('input_boolean.ev_session_active', 'on') %}
               session_start_soc_plus_latched_energy
             {% else %}
-              guest_start_soc_plus_latched_energy
+              guest_start_soc_only_session_inactive
             {% endif %}
           session_active: "{{ states('input_boolean.ev_session_active') }}"
           session_start_soc: "{{ states('input_number.ev_session_start_soc') }}"
@@ -2462,6 +2458,28 @@ template:
             {% else %}
               Last known export cannot support minimum {{ min_amp }}A
             {% endif %}
+
+      - name: "Nordpool DK1 negativ nu"
+        unique_id: nordpool_dk1_negativ_nu
+        state: >
+          {{ states('sensor.nordpool_kwh_dk1_dkk_3_10_025') | float(0) < 0 }}
+      
+      - name: "Nordpool DK1 negativ næste 2 timer"
+        unique_id: nordpool_dk1_negativ_next_2h
+        state: >
+          {% set ns = namespace(found=false) %}
+          {% set prices = (state_attr('sensor.nordpool_kwh_dk1_dkk_3_10_025', 'raw_today') or [])
+                        + (state_attr('sensor.nordpool_kwh_dk1_dkk_3_10_025', 'raw_tomorrow') or []) %}
+          {% for p in prices %}
+            {% set start = as_datetime(p.start) %}
+            {% if start is not none
+                  and start > now()
+                  and start <= now() + timedelta(hours=2)
+                  and p.value | float(0) < 0 %}
+              {% set ns.found = true %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.found }}
 
       
 # 2. Kommandoen der styrer ampere 
