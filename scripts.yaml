@@ -438,5 +438,44 @@ ev_log_session_csv:
   sequence:
     - action: shell_command.ev_append_session_csv
       data:
-        line: "{{ line }}"     
+        line: "{{ line }}"    
 
+speak_to_lars:
+  alias: Speak to Lars
+  mode: restart
+  fields:
+    text:
+      required: true
+  sequence:
+    - action: notify.mobile_app_pixel_10_pro
+      data:
+        message: TTS
+        data:
+          tts_text: "{{ text }}"
+  
+wake_and_speak:
+  alias: Wake And Speak
+  mode: restart
+  fields:
+    text:
+      required: true
+
+  sequence:
+
+    - action: notify.mobile_app_pixel_10_pro
+      data:
+        title: "HA"
+        message: "Vækker telefonen"
+        data:
+          channel: alarm_stream
+          ttl: 0
+          priority: high
+
+    - delay:
+        seconds: 2
+
+    - action: notify.mobile_app_pixel_10_pro
+      data:
+        message: TTS
+        data:
+          tts_text: "{{ text }}"

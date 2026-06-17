@@ -89,6 +89,10 @@ input_boolean:
   ev_session_logged:
     name: EV Session Logged  
 
+  ev_solar_surplus_override_enabled:
+    name: EV Solar Surplus Override Enabled
+    icon: mdi:weather-sunny-alert  
+
 input_datetime:
   ev_planned_ready_by:
     name: EV Planned Ready By
@@ -276,7 +280,15 @@ input_number:
     max: 10
     step: 1
     unit_of_measurement: A
-    mode: box  
+    mode: box 
+
+  ev_solar_surplus_override_kw:
+    name: EV Solar Surplus Override kW
+    min: 5
+    max: 12
+    step: 0.1
+    unit_of_measurement: "kW"
+    mode: box   
 
 input_text:
   ev_last_segment_summary:
@@ -1149,7 +1161,7 @@ template:
           {% set margin = 0.05 %}
           {% set target = ref - margin %}
           {% set X = states('sensor.ev_solar_surplus_before_car') | float(0) %}
-          {% set Xavg = states('sensor.ev_solar_surplus_before_car_average_15m') | float(0) %}
+          {% set Xavg = states('sensor.ev_solar_surplus_effective_15m') | float(0) %}
           {% set decision = states('sensor.ev_charge_decision') %}
           {% set mode = states('input_select.ev_charge_mode') %}
           {% set kw_per_amp = 11 / 16 %}
@@ -1202,7 +1214,7 @@ template:
             {{ states('sensor.ev_solar_surplus_before_car') | float(0) | round(2) }}
 
           solar_surplus_avg_15m_kw: >
-            {{ states('sensor.ev_solar_surplus_before_car_average_15m') | float(0) | round(2) }}
+            {{ states('sensor.ev_solar_surplus_effective_15m') | float(0) | round(2) }}
 
           grid_price: >
             {{ states('sensor.stromligning_current_price_vat') | float(0) | round(3) }}
@@ -1217,7 +1229,7 @@ template:
             {{ states('sensor.ev_charge_decision') }}
 
           amp_floor_from_avg: >
-            {% set Xavg = states('sensor.ev_solar_surplus_before_car_average_15m') | float(0) %}
+            {% set Xavg = states('sensor.ev_solar_surplus_effective_15m') | float(0) %}
             {% set kw_per_amp = 11 / 16 %}
             {{ (Xavg / kw_per_amp) | int(0) }}
 
@@ -1227,7 +1239,7 @@ template:
             {% set ref = states('sensor.ev_night_reference_price_real') | float(999) %}
             {% set target = ref - 0.05 %}
             {% set X = states('sensor.ev_solar_surplus_before_car') | float(0) %}
-            {% set Xavg = states('sensor.ev_solar_surplus_before_car_average_15m') | float(0) %}
+            {% set Xavg = states('sensor.ev_solar_surplus_effective_15m') | float(0) %}
             {% set A = states('sensor.ev_target_ampere_raw') | int(0) %}
             {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
 
@@ -1321,6 +1333,7 @@ template:
           {% elif mode == 'Sun Optimized' %}
             {% set new = solar_new %}
             {% set delta_ok = (new - old) | abs >= 2 %}
+            {% set easee_actual = states('sensor.eh45khwp_dynamic_charger_limit') | int(-1) %}
 
             {% if new > 0 and new < min_amp %}
               0
@@ -1328,6 +1341,8 @@ template:
               {{ new }}
             {% elif old > 0 and old < min_amp %}
               {{ new if new >= min_amp else 0 }}
+            {% elif easee_actual != new and new >= min_amp %}
+              {{ new }}
             {% elif age_ok and delta_ok %}
               {{ new }}
             {% else %}
@@ -2224,6 +2239,36 @@ template:
           guest_target_soc: "{{ states('input_number.ev_guest_planned_target_soc') }}"
           vw_target_soc: "{{ states('sensor.battery_target_charge_level') }}"
           source: "ha_target_soc"  
+
+      - name: Huawei Battery Power Signed
+        unique_id: huawei_battery_power_signed
+        unit_of_measurement: "kW"
+        device_class: power
+        state_class: measurement
+        state: >
+          {{
+            (
+              states('sensor.fsp_ne_191558692_flow_solar_power') | float(0)
+              +
+              states('sensor.fsp_ne_191558692_flow_grid_power') | float(0)
+              -
+              states('sensor.fsp_ne_191558692_flow_load_power') | float(0)
+            ) | round(3)
+          }}   
+
+      - name: "EV Solar Surplus Effective 15m"
+        unique_id: ev_solar_surplus_effective_15m
+        unit_of_measurement: "kW"
+        state: >
+          {% if is_state('input_boolean.ev_solar_surplus_override_enabled', 'on') %}
+            {{ states('input_number.ev_solar_surplus_override_kw') | float(0) | round(2) }}
+          {% else %}
+            {{ states('sensor.ev_solar_surplus_before_car_average_15m') | float(0) | round(2) }}
+          {% endif %}
+        attributes:
+          override_enabled: "{{ states('input_boolean.ev_solar_surplus_override_enabled') }}"
+          override_kw: "{{ states('input_number.ev_solar_surplus_override_kw') }}"
+          real_solar_surplus_15m: "{{ states('sensor.ev_solar_surplus_before_car_average_15m') }}"    
         
  # -----------------------------------------------------------------------------
 
