@@ -94,6 +94,10 @@ ev_charge_start:
         target_ampere: "{{ states('sensor.ev_target_ampere_effective') | int(0) }}"
         min_amp: "{{ states('input_number.ev_min_charge_ampere') | int(7) }}"
 
+    - action: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.ev_start_delay_active
+
     - condition: template
       value_template: >
         {{ target_ampere >= min_amp and target_ampere <= 16 }}
@@ -129,6 +133,20 @@ ev_charge_start:
       then:
         - action: rest_command.easee_start_charging
         - delay: "00:00:15"
+
+    - wait_template: >
+        {{
+          states('sensor.eh45khwp_power') | float(0) > 0.5
+          or states('sensor.ev_charge_decision') != 'LAD'
+          or is_state('input_boolean.ev_session_active', 'off')
+          or is_state('input_boolean.ev_ha_control_enabled', 'off')
+        }}
+      timeout: "00:02:00"
+      continue_on_timeout: true
+
+    - action: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.ev_start_delay_active
 
     - action: logbook.log
       data:
@@ -439,6 +457,77 @@ ev_log_session_csv:
     - action: shell_command.ev_append_session_csv
       data:
         line: "{{ line }}"    
+
+ev_rebaseline_session_from_plan:
+  alias: EV Rebaseline Session From Plan
+  mode: single
+  sequence:
+    - variables:
+        now_text: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+        easee_energy: "{{ states('sensor.eh45khwp_session_energy') | float(0) }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_start_soc
+      data:
+        value: "{{ states('input_number.ev_guest_planned_start_soc') | float(0) }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_target_soc
+      data:
+        value: "{{ states('input_number.ev_guest_planned_target_soc') | float(80) }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_battery_kwh
+      data:
+        value: "{{ states('input_number.ev_guest_planned_battery_kwh') | float(77) }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_energy_latched_kwh
+      data:
+        value: 0
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_easee_start_energy_kwh
+      data:
+        value: "{{ easee_energy }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_segment_start_energy_kwh
+      data:
+        value: "{{ easee_energy }}"
+
+    - action: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_segment_started_at
+      data:
+        datetime: "{{ now_text }}"
+
+    - action: input_boolean.turn_off
+      target:
+        entity_id:
+          - input_boolean.ev_session_logged
+
+    - action: input_boolean.turn_on
+      target:
+        entity_id:
+          - input_boolean.ev_session_active
+          - input_boolean.ev_segment_open
+
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          Session rebaselinet fra plan
+          start_soc={{ states('input_number.ev_guest_planned_start_soc') }},
+          target_soc={{ states('input_number.ev_guest_planned_target_soc') }},
+          battery={{ states('input_number.ev_guest_planned_battery_kwh') }},
+          easee_start_energy={{ easee_energy }}
 
 speak_to_lars:
   alias: Speak to Lars

@@ -721,8 +721,6 @@ template:
             VENT
           {% elif mode != 'Monta Guest' and complete %}
             VENT
-          {% elif currently_charging %}
-            LAD
           {% elif deadline %}
             LAD
           {% elif mode == 'Monta Guest' %}
@@ -773,8 +771,6 @@ template:
               No session
             {% elif mode != 'Monta Guest' and complete %}
               Complete
-            {% elif currently_charging %}
-              Charging now
             {% elif deadline %}
               Deadline
             {% elif mode == 'Monta Guest' and raw >= min_amp %}
@@ -1278,7 +1274,9 @@ template:
             {{ raw }}
           {% elif old >= min_amp and raw == 0 %}
             0
-          {% elif (raw - old) | abs >= 2 %}
+          {% elif raw > old %}
+            {{ raw }}
+          {% elif raw <= (old - 2) %}
             {{ raw }}
           {% else %}
             {{ old }}
@@ -1287,10 +1285,13 @@ template:
         attributes:
           raw: >
             {{ states('sensor.ev_target_ampere_raw') | int(0) }}
+
           last_sent_ampere: >
             {{ states('input_number.ev_last_sent_ampere') | int(0) }}
+
           mode: >
             {{ states('input_select.ev_charge_mode') }}
+
           reason: >
             {% set raw = states('sensor.ev_target_ampere_raw') | int(0) %}
             {% set old = states('input_number.ev_last_sent_ampere') | int(0) %}
@@ -1305,8 +1306,10 @@ template:
               Start allowed immediately
             {% elif old >= min_amp and raw == 0 %}
               Stop allowed immediately
-            {% elif (raw - old) | abs >= 2 %}
-              Delta large enough
+            {% elif raw > old %}
+              Increase accepted immediately
+            {% elif raw <= (old - 2) %}
+              Decrease accepted
             {% else %}
               Hold previous ampere
             {% endif %}
@@ -2269,6 +2272,30 @@ template:
           override_enabled: "{{ states('input_boolean.ev_solar_surplus_override_enabled') }}"
           override_kw: "{{ states('input_number.ev_solar_surplus_override_kw') }}"
           real_solar_surplus_15m: "{{ states('sensor.ev_solar_surplus_before_car_average_15m') }}"    
+
+      - name: EV Planned Ready State
+        unique_id: ev_planned_ready_state
+        state: >
+          {% set dt = states('input_datetime.ev_planned_ready_by') %}
+          {% if dt in ['unknown','unavailable',''] %}
+            Ukendt
+          {% elif as_timestamp(dt) < now().timestamp() %}
+            ⚠ UDLØBET
+          {% else %}
+            OK
+          {% endif %}
+
+      - name: EV Session Ready State
+        unique_id: ev_session_ready_state
+        state: >
+          {% set dt = states('input_datetime.ev_session_ready_by') %}
+          {% if dt in ['unknown','unavailable',''] %}
+            Ukendt
+          {% elif as_timestamp(dt) < now().timestamp() %}
+            ⚠ UDLØBET
+          {% else %}
+            OK
+          {% endif %}    
         
  # -----------------------------------------------------------------------------
 
@@ -2525,6 +2552,7 @@ template:
             {% endif %}
           {% endfor %}
           {{ ns.found }}
+
 
       
 # 2. Kommandoen der styrer ampere 
