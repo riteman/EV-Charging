@@ -89,51 +89,81 @@ ev_charge_start_old:
 ev_charge_start:
   alias: EV Charge Start
   mode: single
+
   sequence:
     - variables:
         target_ampere: "{{ states('sensor.ev_target_ampere_effective') | int(0) }}"
         min_amp: "{{ states('input_number.ev_min_charge_ampere') | int(7) }}"
 
+    # Afvis ugyldig start før start-delay aktiveres
+    - if:
+        - condition: template
+          value_template: >
+            {{ target_ampere < min_amp or target_ampere > 16 }}
+      then:
+        - action: logbook.log
+          data:
+            name: EV
+            message: >
+              Start afvist:
+              target={{ target_ampere }} A,
+              min={{ min_amp }} A,
+              decision={{ states('sensor.ev_charge_decision') }}
+
+        - stop: "Ugyldig target ampere"
+
+    # Hvis bilen allerede lader, skal en ny startsekvens ikke køres
+    - if:
+        - condition: template
+          value_template: >
+            {{ states('sensor.eh45khwp_power') | float(0) > 0.5 }}
+      then:
+        - action: logbook.log
+          data:
+            name: EV
+            message: >
+              Start ignoreret - bilen lader allerede
+              (power={{ states('sensor.eh45khwp_power') }} kW,
+              target={{ target_ampere }} A)
+
+        - stop: "Bilen lader allerede"
+
     - action: input_boolean.turn_on
       target:
         entity_id: input_boolean.ev_start_delay_active
 
-    - condition: template
-      value_template: >
-        {{ target_ampere >= min_amp and target_ampere <= 16 }}
+    # ---------------------------------------------------------
+    # 1. RESET gammel Easee-starttilstand
+    # ---------------------------------------------------------
 
+    - action: rest_command.easee_stop_charging
+
+    - delay: "00:00:03"
+
+    # Charger skal være enabled før ny start
     - action: switch.turn_on
       target:
         entity_id: switch.eh45khwp_charger_enabled
 
-    - delay: "00:00:05"
+    - delay: "00:00:03"
+
+    # ---------------------------------------------------------
+    # 2. Sæt ønsket strøm
+    # ---------------------------------------------------------
 
     - action: script.ev_set_target_ampere
       data:
         ampere: "{{ target_ampere }}"
 
-    - delay: "00:00:20"
+    - delay: "00:00:05"
+
+    # ---------------------------------------------------------
+    # 3. Start opladning
+    # ---------------------------------------------------------
 
     - action: rest_command.easee_start_charging
 
-    - delay: "00:00:15"
-
-    - if:
-        - condition: template
-          value_template: >
-            {{
-              states('sensor.eh45khwp_power') | float(0) < 0.5
-              and states('sensor.eh45khwp_reason_for_no_current') in [
-                'pending_authorization',
-                'Pending authorisation',
-                'Venter på godkendelse',
-                'Afventer godkendelse'
-              ]
-            }}
-      then:
-        - action: rest_command.easee_start_charging
-        - delay: "00:00:15"
-
+    # Vent på reel ladeeffekt
     - wait_template: >
         {{
           states('sensor.eh45khwp_power') | float(0) > 0.5
@@ -141,8 +171,64 @@ ev_charge_start:
           or is_state('input_boolean.ev_session_active', 'off')
           or is_state('input_boolean.ev_ha_control_enabled', 'off')
         }}
-      timeout: "00:02:00"
+      timeout: "00:00:45"
       continue_on_timeout: true
+
+    # ---------------------------------------------------------
+    # 4. Ét komplet retry hvis bilen stadig ikke lader
+    # ---------------------------------------------------------
+
+    - if:
+        - condition: template
+          value_template: >
+            {{
+              states('sensor.eh45khwp_power') | float(0) < 0.5
+              and states('sensor.ev_charge_decision') == 'LAD'
+              and is_state('input_boolean.ev_session_active', 'on')
+              and is_state('input_boolean.ev_ha_control_enabled', 'on')
+            }}
+      then:
+        - action: logbook.log
+          data:
+            name: EV
+            message: >
+              Første startforsøg gav ingen ladeeffekt.
+              Kører ét komplet retry
+              (target={{ target_ampere }} A,
+              status={{ states('sensor.eh45khwp_status') }},
+              reason={{ states('sensor.eh45khwp_reason_for_no_current') }})
+
+        - action: rest_command.easee_stop_charging
+
+        - delay: "00:00:03"
+
+        - action: switch.turn_on
+          target:
+            entity_id: switch.eh45khwp_charger_enabled
+
+        - delay: "00:00:03"
+
+        - action: script.ev_set_target_ampere
+          data:
+            ampere: "{{ target_ampere }}"
+
+        - delay: "00:00:05"
+
+        - action: rest_command.easee_start_charging
+
+        - wait_template: >
+            {{
+              states('sensor.eh45khwp_power') | float(0) > 0.5
+              or states('sensor.ev_charge_decision') != 'LAD'
+              or is_state('input_boolean.ev_session_active', 'off')
+              or is_state('input_boolean.ev_ha_control_enabled', 'off')
+            }}
+          timeout: "00:00:45"
+          continue_on_timeout: true
+
+    # ---------------------------------------------------------
+    # 5. Startsekvens færdig
+    # ---------------------------------------------------------
 
     - action: input_boolean.turn_off
       target:
@@ -154,11 +240,13 @@ ev_charge_start:
         entity_id: switch.eh45khwp_charger_enabled
         message: >
           Easee startsekvens afsluttet
-          (amp={{ target_ampere }},
+          (target={{ target_ampere }} A,
+          actual_limit={{ states('sensor.eh45khwp_dynamic_charger_limit') }} A,
+          last_sent={{ states('input_number.ev_last_sent_ampere') }} A,
           enabled={{ states('switch.eh45khwp_charger_enabled') }},
+          status={{ states('sensor.eh45khwp_status') }},
           reason={{ states('sensor.eh45khwp_reason_for_no_current') }},
-          power={{ states('sensor.eh45khwp_power') }})
-
+          power={{ states('sensor.eh45khwp_power') }} kW)
 ev_charge_stop:
   alias: EV Charge Stop
   mode: single
@@ -198,7 +286,7 @@ ev_set_manual_ampere:
 
 ev_set_target_ampere:
   alias: EV - Set target ampere
-  mode: single
+  mode: restart
   fields:
     ampere:
       description: "Ampere to apply to Easee charger"
@@ -238,8 +326,63 @@ ev_set_target_ampere:
     - action: rest_command.set_ioniq_ampere
       data:
         ampere: "{{ requested_ampere }}"
+      response_variable: easee_set_response_1
 
-    - delay: "00:00:08"
+    - action: logbook.log
+      data:
+        name: EV REST
+        message: >
+          Easee set ampere response 1:
+          requested={{ requested_ampere }} A,
+          status={{ easee_set_response_1.status | default('unknown') }},
+          content={{ easee_set_response_1.content | default('') }}  
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_last_sent_ampere
+      data:
+        value: "{{ requested_ampere }}"
+
+    - if:
+        - condition: template
+          value_template: >
+            {{
+              requested_ampere | int(0) >= min_amp | int(7)
+              and is_state('input_boolean.ev_session_active', 'on')
+              and is_state('input_boolean.ev_segment_open', 'off')
+            }}
+      then:
+        - action: input_boolean.turn_on
+          target:
+            entity_id: input_boolean.ev_segment_open
+
+        - action: input_number.set_value
+          target:
+            entity_id: input_number.ev_segment_ampere
+          data:
+            value: "{{ requested_ampere }}"
+
+        - action: input_datetime.set_datetime
+          target:
+            entity_id: input_datetime.ev_segment_started_at
+          data:
+            datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+        - action: input_number.set_value
+          target:
+            entity_id: input_number.ev_segment_start_energy_kwh
+          data:
+            value: "{{ states('input_number.ev_session_energy_latched_kwh') | float(0) | round(3) }}"
+
+        - action: logbook.log
+          data:
+            name: EV Segment
+            message: >
+              Segment åbnet ved ampere-send:
+              amp={{ requested_ampere }} A,
+              start_energy={{ states('input_number.ev_session_energy_latched_kwh') }} kWh
+
+    - delay: "00:00:12"
 
     - action: homeassistant.update_entity
       target:
@@ -248,41 +391,70 @@ ev_set_target_ampere:
     - delay: "00:00:03"
 
     - variables:
-        easee_actual_ampere: "{{ states('sensor.eh45khwp_dynamic_charger_limit') | int(-1) }}"
+        easee_actual_ampere: "{{ states('sensor.eh45khwp_dynamic_charger_limit') | float(-1) | round(0) | int }}"
         easee_confirmed: >
           {{
-            states('sensor.eh45khwp_dynamic_charger_limit') | int(-1)
+            states('sensor.eh45khwp_dynamic_charger_limit') | float(-1) | round(0) | int
             ==
             requested_ampere | int(0)
           }}
 
     - if:
         - condition: template
-          value_template: "{{ easee_confirmed }}"
+          value_template: "{{ not easee_confirmed }}"
       then:
-        - action: input_number.set_value
-          target:
-            entity_id: input_number.ev_last_sent_ampere
+        - action: rest_command.set_ioniq_ampere
           data:
-            value: "{{ requested_ampere }}"
+            ampere: "{{ requested_ampere }}"
+          response_variable: easee_set_response_2
 
+        - action: logbook.log
+          data:
+            name: EV REST
+            message: >
+              Easee set ampere response 2:
+              requested={{ requested_ampere }} A,
+              status={{ easee_set_response_2.status | default('unknown') }},
+              content={{ easee_set_response_2.content | default('') }}
+
+        - delay: "00:00:12"
+
+        - action: homeassistant.update_entity
+          target:
+            entity_id: sensor.eh45khwp_dynamic_charger_limit
+
+        - delay: "00:00:03"
+
+    - variables:
+        easee_actual_ampere_final: "{{ states('sensor.eh45khwp_dynamic_charger_limit') | float(-1) | round(0) | int }}"
+        easee_confirmed_final: >
+          {{
+            states('sensor.eh45khwp_dynamic_charger_limit') | float(-1) | round(0) | int
+            ==
+            requested_ampere | int(0)
+          }}
+
+    - if:
+        - condition: template
+          value_template: "{{ easee_confirmed_final }}"
+      then:
         - action: logbook.log
           data:
             name: EV
             entity_id: switch.eh45khwp_charger_enabled
             message: >
-              Ampere bekræftet af Easee:
+              Ampere sendt og bekræftet af Easee:
               requested={{ requested_ampere }} A,
-              actual={{ easee_actual_ampere }} A
+              actual={{ easee_actual_ampere_final }} A
       else:
         - action: logbook.log
           data:
             name: EV WARNING
             entity_id: switch.eh45khwp_charger_enabled
             message: >
-              Ampere IKKE bekræftet af Easee:
+              Ampere sendt til Easee, men ikke bekræftet efter retry:
               requested={{ requested_ampere }} A,
-              actual={{ easee_actual_ampere }} A,
+              actual={{ easee_actual_ampere_final }} A,
               target={{ states('sensor.ev_target_ampere_effective') }} A,
               mode={{ states('input_select.ev_charge_mode') }},
               status={{ states('sensor.eh45khwp_status') }},
@@ -568,3 +740,39 @@ wake_and_speak:
         message: TTS
         data:
           tts_text: "{{ text }}"
+
+kokken_taend_alt:
+  alias: Køkken - Tænd alt lys
+  sequence:
+    - action: light.turn_on
+      target:
+        entity_id:
+          - light.kokkenloftb
+          - light.kokkenloftf
+
+    - action: switch.turn_on
+      target:
+        entity_id:
+          - switch.t34_minitong_duan_qi_switch_1
+          - switch.t34_minitong_duan_qi_2_switch_1
+          - switch.t34_minitong_duan_qi_3_switch_1
+
+  mode: single
+
+kokken_sluk_alt:
+  alias: Køkken - Sluk alt lys
+  sequence:
+    - action: light.turn_off
+      target:
+        entity_id:
+          - light.kokkenloftb
+          - light.kokkenloftf
+
+    - action: switch.turn_off
+      target:
+        entity_id:
+          - switch.t34_minitong_duan_qi_switch_1
+          - switch.t34_minitong_duan_qi_2_switch_1
+          - switch.t34_minitong_duan_qi_3_switch_1
+
+  mode: single  
