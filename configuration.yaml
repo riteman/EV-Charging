@@ -2374,6 +2374,57 @@ template:
             {{ (((p|max) - (p|min)) / avg * 100) | round(1) }}
           {% endif %}   
 
+      - name: "EV Start Debug"
+        unique_id: ev_start_debug
+        icon: mdi:bug-check
+        state: >
+          {% set decision = states('sensor.ev_charge_decision') %}
+          {% set power = states('sensor.eh45khwp_power') | float(0) %}
+
+          {% if decision == 'LAD' and power < 0.5 %}
+            START_NEEDED
+          {% elif power > 0.5 %}
+            CHARGING
+          {% else %}
+            IDLE
+          {% endif %}
+
+        attributes:
+          decision: "{{ states('sensor.ev_charge_decision') }}"
+
+          target_ampere: >
+            {{ states('sensor.ev_target_ampere_effective') | int(0) }}
+
+          easee_limit: >
+            {{ states('sensor.eh45khwp_dynamic_charger_limit') }}
+
+          last_sent_ampere: >
+            {{ states('input_number.ev_last_sent_ampere') }}
+
+          power_kw: >
+            {{ states('sensor.eh45khwp_power') }}
+
+          easee_status: >
+            {{ states('sensor.eh45khwp_status') }}
+
+          no_current_reason: >
+            {{ states('sensor.eh45khwp_reason_for_no_current') }}
+
+          session_active: >
+            {{ states('input_boolean.ev_session_active') }}
+
+          ha_control: >
+            {{ states('input_boolean.ev_ha_control_enabled') }}
+
+          ready_to_charge: >
+            {{ states('binary_sensor.ev_ready_to_charge') }}
+
+          start_delay: >
+            {{ states('input_boolean.ev_start_delay_active') }}
+
+          mode: >
+            {{ states('input_select.ev_charge_mode') }}    
+
 
         
  # -----------------------------------------------------------------------------

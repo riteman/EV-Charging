@@ -286,179 +286,241 @@ ev_set_manual_ampere:
 
 ev_set_target_ampere:
   alias: EV - Set target ampere
-  mode: restart
+  mode: single
+
   fields:
     ampere:
       description: "Ampere to apply to Easee charger"
       example: 10
 
   sequence:
+    # ---------------------------------------------------------
+    # 1. Bestem og valider ønsket ampere
+    # ---------------------------------------------------------
     - variables:
         requested_ampere: >
           {% set passed = ampere | default(none) %}
-          {% if passed is not none and passed not in ['', 'unknown', 'unavailable', 'none'] %}
+          {% if passed is not none
+             and passed not in ['', 'unknown', 'unavailable', 'none'] %}
             {{ passed | int(0) }}
           {% else %}
             {{ states('sensor.ev_target_ampere_effective') | int(0) }}
           {% endif %}
-        min_amp: "{{ states('input_number.ev_min_charge_ampere') | int(7) }}"
+
+        min_amp: >
+          {{ states('input_number.ev_min_charge_ampere') | int(7) }}
 
     - condition: template
       value_template: >
-        {{ requested_ampere == 0 or (requested_ampere >= min_amp and requested_ampere <= 16) }}
+        {{
+          requested_ampere == 0
+          or
+          (requested_ampere >= min_amp and requested_ampere <= 16)
+        }}
 
+    # ---------------------------------------------------------
+    # 2. Forebyggende token-refresh hvis token mangler/gammelt
+    # ---------------------------------------------------------
     - if:
         - condition: template
           value_template: >
             {{
-              state_attr('sensor.easee_api_access_token_final_2', 'accessToken') in [none, '']
-              or (
-                states('sensor.easee_token_age_hours') not in ['unknown', 'unavailable', '', 'none']
-                and states('sensor.easee_token_age_hours') | float(999) > 1.5
+              state_attr(
+                'sensor.easee_api_access_token_final_2',
+                'accessToken'
+              ) in [none, '']
+              or
+              (
+                states('sensor.easee_token_age_hours')
+                  not in ['unknown', 'unavailable', '', 'none']
+                and
+                states('sensor.easee_token_age_hours') | float(999) > 1.5
               )
             }}
       then:
         - action: homeassistant.update_entity
-          target:
+          data:
             entity_id: sensor.easee_api_access_token_final_2
+
         - delay: "00:00:03"
 
+    # ---------------------------------------------------------
+    # 3. Første REST-forsøg
+    # ---------------------------------------------------------
     - action: rest_command.set_ioniq_ampere
       data:
         ampere: "{{ requested_ampere }}"
-      response_variable: easee_set_response_1
+      response_variable: easee_response_1
+
+    - variables:
+        status_1: >
+          {{ easee_response_1.status | default(0) | int(0) }}
 
     - action: logbook.log
       data:
         name: EV REST
         message: >
-          Easee set ampere response 1:
+          Easee ampere forsøg 1:
           requested={{ requested_ampere }} A,
-          status={{ easee_set_response_1.status | default('unknown') }},
-          content={{ easee_set_response_1.content | default('') }}  
+          status={{ status_1 }},
+          content={{ easee_response_1.content | default('') }}
 
-    - action: input_number.set_value
-      target:
-        entity_id: input_number.ev_last_sent_ampere
-      data:
-        value: "{{ requested_ampere }}"
-
+    # ---------------------------------------------------------
+    # 4. Hvis Easee svarer 401:
+    #    forny token tvangsmæssigt og prøv igen
+    # ---------------------------------------------------------
     - if:
         - condition: template
-          value_template: >
-            {{
-              requested_ampere | int(0) >= min_amp | int(7)
-              and is_state('input_boolean.ev_session_active', 'on')
-              and is_state('input_boolean.ev_segment_open', 'off')
-            }}
+          value_template: "{{ status_1 == 401 }}"
       then:
-        - action: input_boolean.turn_on
-          target:
-            entity_id: input_boolean.ev_segment_open
-
-        - action: input_number.set_value
-          target:
-            entity_id: input_number.ev_segment_ampere
-          data:
-            value: "{{ requested_ampere }}"
-
-        - action: input_datetime.set_datetime
-          target:
-            entity_id: input_datetime.ev_segment_started_at
-          data:
-            datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
-
-        - action: input_number.set_value
-          target:
-            entity_id: input_number.ev_segment_start_energy_kwh
-          data:
-            value: "{{ states('input_number.ev_session_energy_latched_kwh') | float(0) | round(3) }}"
-
         - action: logbook.log
           data:
-            name: EV Segment
+            name: EV REST
             message: >
-              Segment åbnet ved ampere-send:
-              amp={{ requested_ampere }} A,
-              start_energy={{ states('input_number.ev_session_energy_latched_kwh') }} kWh
+              Easee returnerede 401.
+              Fornyer access token og sender
+              {{ requested_ampere }} A igen.
 
-    - delay: "00:00:12"
+        - action: homeassistant.update_entity
+          data:
+            entity_id: sensor.easee_api_access_token_final_2
 
-    - action: homeassistant.update_entity
-      target:
-        entity_id: sensor.eh45khwp_dynamic_charger_limit
+        - delay: "00:00:03"
 
-    - delay: "00:00:03"
-
-    - variables:
-        easee_actual_ampere: "{{ states('sensor.eh45khwp_dynamic_charger_limit') | float(-1) | round(0) | int }}"
-        easee_confirmed: >
-          {{
-            states('sensor.eh45khwp_dynamic_charger_limit') | float(-1) | round(0) | int
-            ==
-            requested_ampere | int(0)
-          }}
-
-    - if:
-        - condition: template
-          value_template: "{{ not easee_confirmed }}"
-      then:
         - action: rest_command.set_ioniq_ampere
           data:
             ampere: "{{ requested_ampere }}"
-          response_variable: easee_set_response_2
+          response_variable: easee_response_2
+
+        - variables:
+            status_final: >
+              {{ easee_response_2.status | default(0) | int(0) }}
+
+            content_final: >
+              {{ easee_response_2.content | default('') }}
 
         - action: logbook.log
           data:
             name: EV REST
             message: >
-              Easee set ampere response 2:
+              Easee ampere forsøg 2 efter token-refresh:
               requested={{ requested_ampere }} A,
-              status={{ easee_set_response_2.status | default('unknown') }},
-              content={{ easee_set_response_2.content | default('') }}
+              status={{ status_final }},
+              content={{ content_final }}
 
-        - delay: "00:00:12"
+      else:
+        - variables:
+            status_final: "{{ status_1 }}"
+            content_final: >
+              {{ easee_response_1.content | default('') }}
+
+    # ---------------------------------------------------------
+    # 5. Kun HTTP 2xx betyder at HA registrerer kommandoen
+    # ---------------------------------------------------------
+    - if:
+        - condition: template
+          value_template: >
+            {{ status_final >= 200 and status_final < 300 }}
+      then:
+        - action: input_number.set_value
+          target:
+            entity_id: input_number.ev_last_sent_ampere
+          data:
+            value: "{{ requested_ampere }}"
+
+        # -----------------------------------------------------
+        # Segment åbnes kun efter accepteret ampere-kommando
+        # -----------------------------------------------------
+        - if:
+            - condition: template
+              value_template: >
+                {{
+                  requested_ampere >= min_amp
+                  and is_state('input_boolean.ev_session_active', 'on')
+                  and is_state('input_boolean.ev_segment_open', 'off')
+                }}
+          then:
+            - action: input_boolean.turn_on
+              target:
+                entity_id: input_boolean.ev_segment_open
+
+            - action: input_number.set_value
+              target:
+                entity_id: input_number.ev_segment_ampere
+              data:
+                value: "{{ requested_ampere }}"
+
+            - action: input_datetime.set_datetime
+              target:
+                entity_id: input_datetime.ev_segment_started_at
+              data:
+                datetime: >
+                  {{ now().strftime('%Y-%m-%d %H:%M:%S') }}
+
+            - action: input_number.set_value
+              target:
+                entity_id: input_number.ev_segment_start_energy_kwh
+              data:
+                value: >
+                  {{
+                    states('input_number.ev_session_energy_latched_kwh')
+                    | float(0)
+                    | round(3)
+                  }}
+
+        # -----------------------------------------------------
+        # Easee-sensor får lidt tid til at følge efter
+        # -----------------------------------------------------
+        - delay: "00:00:08"
 
         - action: homeassistant.update_entity
-          target:
+          data:
             entity_id: sensor.eh45khwp_dynamic_charger_limit
 
         - delay: "00:00:03"
 
-    - variables:
-        easee_actual_ampere_final: "{{ states('sensor.eh45khwp_dynamic_charger_limit') | float(-1) | round(0) | int }}"
-        easee_confirmed_final: >
-          {{
-            states('sensor.eh45khwp_dynamic_charger_limit') | float(-1) | round(0) | int
-            ==
-            requested_ampere | int(0)
-          }}
+        - variables:
+            easee_actual_ampere: >
+              {{
+                states('sensor.eh45khwp_dynamic_charger_limit')
+                | float(-1)
+                | round(0)
+                | int
+              }}
 
-    - if:
-        - condition: template
-          value_template: "{{ easee_confirmed_final }}"
-      then:
         - action: logbook.log
           data:
             name: EV
-            entity_id: switch.eh45khwp_charger_enabled
             message: >
-              Ampere sendt og bekræftet af Easee:
+              Easee ampere accepteret:
               requested={{ requested_ampere }} A,
-              actual={{ easee_actual_ampere_final }} A
+              HTTP={{ status_final }},
+              actual_limit={{ easee_actual_ampere }} A,
+              mode={{ states('input_select.ev_charge_mode') }}
+
       else:
+        # -----------------------------------------------------
+        # Fejl: vi må IKKE lade Last Sent stå som om det lykkedes
+        # -----------------------------------------------------
+        - action: input_number.set_value
+          target:
+            entity_id: input_number.ev_last_sent_ampere
+          data:
+            value: 0
+
         - action: logbook.log
           data:
             name: EV WARNING
-            entity_id: switch.eh45khwp_charger_enabled
             message: >
-              Ampere sendt til Easee, men ikke bekræftet efter retry:
+              Easee ampere blev IKKE accepteret:
               requested={{ requested_ampere }} A,
-              actual={{ easee_actual_ampere_final }} A,
-              target={{ states('sensor.ev_target_ampere_effective') }} A,
+              HTTP={{ status_final }},
+              content={{ content_final }},
               mode={{ states('input_select.ev_charge_mode') }},
               status={{ states('sensor.eh45khwp_status') }},
               reason={{ states('sensor.eh45khwp_reason_for_no_current') }}
+
+        - stop: "Easee afviste ampere-kommandoen"
 
 intellicharge_export_allow_always:
   alias: IntelliCharge Export Allow Always

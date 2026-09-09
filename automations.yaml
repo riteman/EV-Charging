@@ -106,6 +106,7 @@
   description: >
     MODEL B - Starter en ny fysisk opladning når beslutningen er LAD.
     Selve Easee-startsekvensen håndteres udelukkende af script.ev_charge_start.
+    Watchdog kontrollerer én gang pr. minut om en ønsket opladning mangler at starte.
 
   triggers:
     - trigger: state
@@ -130,6 +131,9 @@
       entity_id: sensor.ev_target_ampere_effective
       for:
         seconds: 10
+
+    - trigger: time_pattern
+      minutes: "/1"
 
     - trigger: homeassistant
       event: start
@@ -426,80 +430,20 @@
 - id: 'ev_apply_target_ampere'
   alias: EV - Apply target ampere
   description: >
-    MODEL B - Vedligeholder Easee ampere under aktiv/relevant opladning.
-    Stopper også fysisk opladning når decision=VENT eller target_ampere=0.
-    Watchdog checker én gang pr. minut, men sender kun kommando hvis Easee ikke står på ønsket ampere.
+    MODEL B - Vedligeholder Easee ampere under fysisk aktiv opladning.
+    Opstart håndteres udelukkende af EV - Start charging stable / EV Charge Start.
+    Watchdog checker én gang pr. minut og sender kun hvis Easee-afvigelsen er reel.
 
   triggers:
     - trigger: state
-      entity_id:
-        - sensor.ev_target_ampere_effective
+      entity_id: sensor.ev_target_ampere_effective
       for:
         seconds: 20
 
     - trigger: state
-      entity_id:
-        - sensor.eh45khwp_dynamic_charger_limit
+      entity_id: sensor.eh45khwp_dynamic_charger_limit
       for:
         seconds: 20
-
-    - trigger: state
-      entity_id:
-        - switch.eh45khwp_charger_enabled
-      to: 'on'
-      for:
-        seconds: 10
-
-    - trigger: state
-      entity_id:
-        - input_boolean.ev_session_active
-      to: 'on'
-      for:
-        seconds: 5
-
-    - trigger: state
-      entity_id:
-        - input_select.ev_charge_mode
-      to:
-        - 'Auto'
-        - 'Monta Guest'
-        - 'Sun Optimized'
-        - 'Charge Now'
-      for:
-        seconds: 10
-
-    - trigger: state
-      entity_id:
-        - sensor.ev_charge_decision
-      for:
-        seconds: 10
-
-    - trigger: state
-      entity_id:
-        - binary_sensor.ev_ready_to_charge
-      to: 'on'
-      for:
-        seconds: 10
-
-    - trigger: state
-      entity_id:
-        - sensor.eh45khwp_status
-      to:
-        - 'awaiting_authorisation'
-        - 'awaiting_authorization'
-        - 'Awaiting authorisation'
-        - 'Awaiting authorization'
-        - 'Venter på godkendelse'
-        - 'Ready to charge'
-      for:
-        seconds: 5
-
-    - trigger: state
-      entity_id:
-        - input_boolean.ev_solar_surplus_override_enabled
-        - input_number.ev_solar_surplus_override_kw
-      for:
-        seconds: 5
 
     - trigger: time_pattern
       minutes: "/1"
@@ -513,59 +457,56 @@
       entity_id: input_boolean.ev_session_active
       state: 'on'
 
+    - condition: state
+      entity_id: sensor.ev_charge_decision
+      state: 'LAD'
+
+    # Denne automation må kun regulere en allerede kørende opladning
+    - condition: numeric_state
+      entity_id: sensor.eh45khwp_power
+      above: 0.5
+
     - condition: template
       value_template: >
-        {% set decision = states('sensor.ev_charge_decision') %}
-        {% set target = states('sensor.ev_target_ampere_effective') | int(0) %}
-        {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
-        {{ decision == 'LAD' and target >= min_amp }}
+        {{
+          states('sensor.ev_target_ampere_effective') | int(0)
+          >=
+          states('input_number.ev_min_charge_ampere') | int(7)
+        }}
 
   actions:
     - variables:
-        decision: "{{ states('sensor.ev_charge_decision') }}"
         target: "{{ states('sensor.ev_target_ampere_effective') | int(0) }}"
-        min_amp: "{{ states('input_number.ev_min_charge_ampere') | int(7) }}"
-        actual: "{{ states('sensor.eh45khwp_dynamic_charger_limit') | float(-1) | round(0) | int }}"
+        actual: >
+          {{
+            states('sensor.eh45khwp_dynamic_charger_limit')
+            | float(-1)
+            | round(0)
+            | int
+          }}
         power_kw: "{{ states('sensor.eh45khwp_power') | float(0) }}"
         mode: "{{ states('input_select.ev_charge_mode') }}"
 
-    - choose:
-        - conditions:
-            - condition: template
-              value_template: >
-                {{
-                  decision == 'LAD'
-                  and target >= min_amp
-                  and actual != target
-                }}
-          sequence:
-            - action: script.ev_set_target_ampere
-              data:
-                ampere: "{{ target }}"
+    - if:
+        - condition: template
+          value_template: "{{ actual != target }}"
+      then:
+        - action: script.ev_set_target_ampere
+          data:
+            ampere: "{{ target }}"
 
-            - action: logbook.log
-              data:
-                name: EV
-                message: >
-                  MODEL B: Apply target ampere
-                  target={{ target }} A,
-                  easee_actual={{ actual }} A,
-                  last_sent={{ states('input_number.ev_last_sent_ampere') }} A,
-                  cable={{ states('binary_sensor.ev_cable_connected_effective') }},
-                  status={{ states('sensor.eh45khwp_status') }},
-                  mode={{ mode }}
-      default:
         - action: logbook.log
           data:
             name: EV
             message: >
-              MODEL B: Apply target ampere checked - no action
+              MODEL B: Ampere reguleret under aktiv opladning
               target={{ target }} A,
-              easee_actual={{ actual }} A,
-              decision={{ decision }},
+              easee_actual_before={{ actual }} A,
+              last_sent={{ states('input_number.ev_last_sent_ampere') }} A,
+              power={{ power_kw }} kW,
               mode={{ mode }}
 
-  mode: restart
+  mode: single
 
 - id: 'intellicharge_acquire_ev_override'
   alias: IntelliCharge - Acquire EV Override
