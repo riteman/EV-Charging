@@ -1,0 +1,2467 @@
+- id: '1775146735717'
+  alias: Systemtilstand
+  description: ''
+  triggers:
+    - trigger: state
+      entity_id:
+        - sensor.eh45khwp_status
+      to: 'Venter på godkendelse'
+  conditions: []
+  actions:
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: input_select.ev_charge_mode
+              state: 'Auto'
+          sequence:
+            - action: input_boolean.turn_on
+              metadata: {}
+              target:
+                entity_id: input_boolean.ev_ha_control_enabled
+              data: {}
+        - conditions:
+            - condition: state
+              entity_id: input_select.ev_charge_mode
+              state: 'Charge Now'
+          sequence: []
+        - conditions:
+            - condition: state
+              entity_id: input_select.ev_charge_mode
+              state: 'Monta Guest'
+          sequence: []
+  mode: single
+
+- id: 'ev_init_defaults_at_startup'
+  alias: EV - Init defaults at startup
+  description: ''
+  triggers:
+    - trigger: homeassistant
+      event: start
+  conditions: []
+  actions:
+    - action: input_number.set_value
+      metadata: {}
+      target:
+        entity_id: input_number.ev_guest_planned_target_soc
+      data:
+        value: 80
+    - action: input_select.select_option
+      target:
+        entity_id: input_select.ev_guest_target_quick
+      data:
+        option: "80"
+    - action: input_number.set_value
+      metadata: {}
+      target:
+        entity_id: input_number.ev_guest_planned_battery_kwh
+      data:
+        value: 77
+    - action: input_datetime.set_datetime
+      metadata: {}
+      target:
+        entity_id: input_datetime.ev_planned_ready_by
+      data:
+        datetime: "{{ today_at('09:00:00').strftime('%Y-%m-%d %H:%M:%S') if now() < today_at('09:00:00') else (today_at('09:00:00') + timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S') }}"
+  mode: single
+
+- id: 'ev_start_session_on_cable_connect'
+  alias: EV - Start session on cable connect
+  description: "MODEL B: Ved kabeltilslutning opdateres Ready By; session init håndteres af ev_init_session_when_ready"
+
+  triggers:
+    - trigger: state
+      entity_id:
+        - binary_sensor.charging_cable_connected
+      to: 'on'
+
+    - trigger: state
+      entity_id:
+        - binary_sensor.ev_cable_connected_effective
+      to: 'on'
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_ha_control_enabled
+      state: 'on'
+
+  actions:
+    - action: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_session_ready_by
+      data:
+        datetime: "{{ states('input_datetime.ev_planned_ready_by') }}"
+
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          MODEL B: Kabeltilslutning registreret.
+          Ready By sat til {{ states('input_datetime.ev_session_ready_by') }}.
+          Session-init overlades til ev_init_session_when_ready.
+
+  mode: single
+
+- id: 'ev_start_charging_stable'
+  alias: EV - Start charging stable
+  description: >
+    MODEL B - Starter en ny fysisk opladning når beslutningen er LAD.
+    Selve Easee-startsekvensen håndteres udelukkende af script.ev_charge_start.
+    Watchdog kontrollerer én gang pr. minut om en ønsket opladning mangler at starte.
+
+  triggers:
+    - trigger: state
+      entity_id: sensor.ev_charge_decision
+      to: 'LAD'
+      for:
+        seconds: 10
+
+    - trigger: state
+      entity_id: input_boolean.ev_session_active
+      to: 'on'
+      for:
+        seconds: 10
+
+    - trigger: state
+      entity_id: binary_sensor.ev_ready_to_charge
+      to: 'on'
+      for:
+        seconds: 10
+
+    - trigger: state
+      entity_id: sensor.ev_target_ampere_effective
+      for:
+        seconds: 10
+
+    - trigger: time_pattern
+      minutes: "/1"
+
+    - trigger: homeassistant
+      event: start
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_ha_control_enabled
+      state: 'on'
+
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+    - condition: state
+      entity_id: sensor.ev_charge_decision
+      state: 'LAD'
+
+    - condition: state
+      entity_id: binary_sensor.ev_ready_to_charge
+      state: 'on'
+
+    - condition: template
+      value_template: >
+        {{
+          states('sensor.ev_target_ampere_effective') | int(0)
+          >=
+          states('input_number.ev_min_charge_ampere') | int(7)
+        }}
+
+    - condition: template
+      value_template: >
+        {{ states('sensor.eh45khwp_power') | float(0) < 0.5 }}
+
+    - condition: template
+      value_template: >
+        {% set cable_state = states('binary_sensor.ev_cable_connected_effective') %}
+        {% set easee_status = states('sensor.eh45khwp_status') %}
+        {{
+          cable_state in ['on', 'unknown', 'unavailable']
+          or easee_status in [
+            'awaiting_authorization',
+            'awaiting_authorisation',
+            'Venter på godkendelse',
+            'charging',
+            'Oplader',
+            'Klar til opladning',
+            'ready_to_charge',
+            'Ready to charge',
+            'ready',
+            'Ready'
+          ]
+        }}
+
+  actions:
+    - action: script.ev_charge_start
+
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          MODEL B: Start charging stable executed
+          (mode={{ states('input_select.ev_charge_mode') }},
+          decision={{ states('sensor.ev_charge_decision') }},
+          amp={{ states('sensor.ev_target_ampere_effective') }},
+          cable={{ states('binary_sensor.ev_cable_connected_effective') }},
+          status={{ states('sensor.eh45khwp_status') }},
+          reason={{ states('sensor.eh45khwp_reason_for_no_current') }},
+          power={{ states('sensor.eh45khwp_power') }} kW)
+
+  mode: single
+
+- id: ev_start_delay_off_when_not_lad
+  alias: EV - Start delay off when not LAD
+  triggers:
+    - trigger: state
+      entity_id: sensor.ev_charge_decision
+
+  conditions:
+    - condition: template
+      value_template: "{{ states('sensor.ev_charge_decision') != 'LAD' }}"
+
+  actions:
+    - action: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.ev_start_delay_active
+
+  mode: restart  
+
+  
+- id: 'ev_stop_charging_stable'
+  alias: EV - Stop charging stable
+  description: ''
+  triggers:
+    - trigger: state
+      entity_id:
+        - sensor.ev_charge_decision
+      to: 'VENT'
+      for:
+        hours: 0
+        minutes: 15
+        seconds: 0
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_ha_control_enabled
+      state: 'on'
+
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+    - condition: state
+      entity_id: input_select.ev_charge_mode
+      state: 'Auto'
+
+    - condition: state
+      entity_id: binary_sensor.charging_cable_connected
+      state: 'on'
+
+  actions:
+    - action: script.ev_charge_stop
+      metadata: {}
+      data: {}
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+         Stoppet (decision={{ states('sensor.ev_charge_decision') }})  
+  mode: single
+  
+- id: 'ev_control_reduced_ac_charging'
+  alias: EV - Control reduced AC charging
+  description: 'Obsolete legacy flow disabled because charger ampere is now controlled directly via Easee'
+  triggers: []
+  conditions: []
+  actions: []
+  mode: single
+  
+- id: 'ev_guest_target_sync'
+  alias: EV - Guest target sync (80/100)
+  description: Sync quick target til rigtig target
+  triggers:
+    - trigger: state
+      entity_id:
+        - input_select.ev_guest_target_quick
+  conditions: []
+  actions:
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_guest_planned_target_soc
+      data:
+        value: "{{ states('input_select.ev_guest_target_quick') | int }}"
+  mode: single
+  
+- id: 'ev_guest_target_toggle_sync'
+  alias: EV - Guest target toggle sync
+  triggers:
+    - trigger: state
+      entity_id:
+        - input_boolean.ev_guest_target_100
+
+  actions:
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: input_boolean.ev_guest_target_100
+              state: 'on'
+          sequence:
+            - action: input_number.set_value
+              target:
+                entity_id: input_number.ev_guest_planned_target_soc
+              data:
+                value: 100
+      default:
+        - action: input_number.set_value
+          target:
+            entity_id: input_number.ev_guest_planned_target_soc
+          data:
+            value: 80
+
+  mode: single
+  
+- id: 'ev_sync_mode_and_ha_control'
+  alias: EV - Sync mode and HA control
+  description: ''
+  triggers:
+    - trigger: state
+      entity_id:
+        - input_select.ev_charge_mode
+  conditions: []
+  actions:
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: input_select.ev_charge_mode
+              state: 'Stop'
+          sequence:
+            - action: input_boolean.turn_off
+              target:
+                entity_id: input_boolean.ev_ha_control_enabled
+
+        - conditions:
+            - condition: state
+              entity_id: input_select.ev_charge_mode
+              state: 'Auto'
+          sequence:
+            - action: input_boolean.turn_on
+              target:
+                entity_id: input_boolean.ev_ha_control_enabled
+
+        - conditions:
+            - condition: state
+              entity_id: input_select.ev_charge_mode
+              state: 'Charge Now'
+          sequence:
+            - action: input_boolean.turn_on
+              target:
+                entity_id: input_boolean.ev_ha_control_enabled
+
+        - conditions:
+            - condition: state
+              entity_id: input_select.ev_charge_mode
+              state: 'Monta Guest'
+          sequence:
+            - action: input_boolean.turn_on
+              target:
+                entity_id: input_boolean.ev_ha_control_enabled
+
+        - conditions:
+            - condition: state
+              entity_id: input_select.ev_charge_mode
+              state: 'Sun Optimized'
+          sequence:
+            - action: input_boolean.turn_on
+              target:
+                entity_id: input_boolean.ev_ha_control_enabled
+  mode: single
+  
+- id: 'ev_stop_charging_immediate'
+  alias: EV - Stop charging immediate
+  description: Stopper straks når ladning ikke længere er tilladt
+  triggers:
+    - trigger: state
+      entity_id:
+        - input_select.ev_charge_mode
+      to: 'Stop'
+    - trigger: state
+      entity_id:
+        - input_boolean.ev_ha_control_enabled
+      to: 'off'
+    - trigger: state
+      entity_id:
+        - input_boolean.ev_session_active
+      to: 'off'
+    - trigger: state
+      entity_id:
+        - binary_sensor.charging_cable_connected
+      to: 'off'
+  conditions:
+    - condition: state
+      entity_id: switch.eh45khwp_charger_enabled
+      state: 'on'
+  actions:
+    - service: script.ev_charge_stop
+    - service: logbook.log
+      data:
+        name: EV
+        message: >
+          Stoppet straks
+          (mode={{ states('input_select.ev_charge_mode') }},
+          ha_control={{ states('input_boolean.ev_ha_control_enabled') }},
+          session={{ states('input_boolean.ev_session_active') }},
+          cable={{ states('binary_sensor.charging_cable_connected') }})
+  mode: single
+
+- id: 'ev_sync_planned_to_session_when_idle'
+  alias: EV - Sync planned ready time to session when idle
+  description: ''
+  triggers:
+    - trigger: state
+      entity_id:
+        - input_datetime.ev_planned_ready_by
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'off'
+  actions:
+    - action: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_session_ready_by
+      data:
+        datetime: "{{ states('input_datetime.ev_planned_ready_by') }}"
+  mode: single
+
+- id: 'ev_apply_target_ampere'
+  alias: EV - Apply target ampere
+  description: >
+    MODEL B - Vedligeholder Easee ampere under fysisk aktiv opladning.
+    Opstart håndteres udelukkende af EV - Start charging stable / EV Charge Start.
+    Watchdog checker én gang pr. minut og sender kun hvis Easee-afvigelsen er reel.
+
+  triggers:
+    - trigger: state
+      entity_id: sensor.ev_target_ampere_effective
+      for:
+        seconds: 20
+
+    - trigger: state
+      entity_id: sensor.eh45khwp_dynamic_charger_limit
+      for:
+        seconds: 20
+
+    - trigger: time_pattern
+      minutes: "/1"
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_ha_control_enabled
+      state: 'on'
+
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+    - condition: state
+      entity_id: sensor.ev_charge_decision
+      state: 'LAD'
+
+    # Denne automation må kun regulere en allerede kørende opladning
+    - condition: numeric_state
+      entity_id: sensor.eh45khwp_power
+      above: 0.5
+
+    - condition: template
+      value_template: >
+        {{
+          states('sensor.ev_target_ampere_effective') | int(0)
+          >=
+          states('input_number.ev_min_charge_ampere') | int(7)
+        }}
+
+  actions:
+    - variables:
+        target: "{{ states('sensor.ev_target_ampere_effective') | int(0) }}"
+        actual: >
+          {{
+            states('sensor.eh45khwp_dynamic_charger_limit')
+            | float(-1)
+            | round(0)
+            | int
+          }}
+        power_kw: "{{ states('sensor.eh45khwp_power') | float(0) }}"
+        mode: "{{ states('input_select.ev_charge_mode') }}"
+
+    - if:
+        - condition: template
+          value_template: "{{ actual != target }}"
+      then:
+        - action: script.ev_set_target_ampere
+          data:
+            ampere: "{{ target }}"
+
+        - action: logbook.log
+          data:
+            name: EV
+            message: >
+              MODEL B: Ampere reguleret under aktiv opladning
+              target={{ target }} A,
+              easee_actual_before={{ actual }} A,
+              last_sent={{ states('input_number.ev_last_sent_ampere') }} A,
+              power={{ power_kw }} kW,
+              mode={{ mode }}
+
+  mode: single
+
+- id: 'intellicharge_acquire_ev_override'
+  alias: IntelliCharge - Acquire EV Override
+  description: EV overtager IntelliCharge når EV-logikken kræver Allow Always
+  triggers:
+    - trigger: state
+      entity_id:
+        - binary_sensor.ev_should_force_intellicharge_allow
+      to: 'on'
+      for:
+        seconds: 30
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.intellicharge_overridden_by_ev
+      state: 'off'
+
+  actions:
+    - action: input_select.select_option
+      target:
+        entity_id: input_select.intellicharge_pre_ev_mode
+      data:
+        option: >
+          {% set s = states('sensor.ev_intellicharge_smart_status_2') %}
+          {% if s in ['Smart', 'Allow Always'] %}
+            {{ s }}
+          {% else %}
+            Smart
+          {% endif %}
+
+    - action: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.intellicharge_overridden_by_ev
+
+    - action: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.intellicharge_override_started_at
+      data:
+        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+    - action: script.intellicharge_apply_allow
+
+    - action: logbook.log
+      data:
+        name: IntelliCharge
+        message: >
+          EV override aktiveret.
+          Pre-mode={{ states('input_select.intellicharge_pre_ev_mode') }},
+          status={{ states('sensor.ev_intellicharge_smart_status_2') }},
+          force={{ states('binary_sensor.ev_should_force_intellicharge_allow') }}
+
+  mode: single
+
+- id: 'intellicharge_release_ev_override'
+  alias: IntelliCharge - Release EV Override
+  description: Gendan kun IntelliCharge hvis EV tidligere har overtaget den
+  triggers:
+    - trigger: state
+      entity_id:
+        - binary_sensor.ev_should_force_intellicharge_allow
+      to: 'off'
+      for:
+        minutes: 2
+
+    - trigger: state
+      entity_id:
+        - input_select.ev_charge_mode
+      to: 'Stop'
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.intellicharge_overridden_by_ev
+      state: 'on'
+
+  actions:
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: input_select.intellicharge_pre_ev_mode
+              state: 'Smart'
+          sequence:
+            - action: script.intellicharge_apply_smart
+
+        - conditions:
+            - condition: state
+              entity_id: input_select.intellicharge_pre_ev_mode
+              state: 'Allow Always'
+          sequence:
+            - action: script.intellicharge_apply_allow
+
+    - action: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.intellicharge_overridden_by_ev
+
+  mode: single
+
+- id: 'intellicharge_recover_after_restart'
+  alias: IntelliCharge - Recover after restart
+  description: Genskab eller frigiv EV override efter restart
+  triggers:
+    - trigger: homeassistant
+      event: start
+
+  conditions: []
+
+  actions:
+    - delay: "00:00:30"
+
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: input_boolean.intellicharge_overridden_by_ev
+              state: 'on'
+            - condition: state
+              entity_id: binary_sensor.ev_should_force_intellicharge_allow
+              state: 'on'
+          sequence:
+            - if:
+                - condition: not
+                  conditions:
+                    - condition: state
+                      entity_id: sensor.ev_intellicharge_smart_status_2
+                      state: 'Allow Always'
+              then:
+                - action: script.intellicharge_apply_allow
+
+                - action: logbook.log
+                  data:
+                    name: IntelliCharge
+                    message: >
+                      Recovery: beholdt/reetablerede Allow Always efter restart
+
+        - conditions:
+            - condition: state
+              entity_id: input_boolean.intellicharge_overridden_by_ev
+              state: 'on'
+            - condition: state
+              entity_id: binary_sensor.ev_should_force_intellicharge_allow
+              state: 'off'
+          sequence:
+            - choose:
+                - conditions:
+                    - condition: state
+                      entity_id: input_select.intellicharge_pre_ev_mode
+                      state: 'Smart'
+                  sequence:
+                    - action: script.intellicharge_apply_smart
+
+                    - action: logbook.log
+                      data:
+                        name: IntelliCharge
+                        message: >
+                          Recovery: gendannede Smart efter restart
+
+                - conditions:
+                    - condition: state
+                      entity_id: input_select.intellicharge_pre_ev_mode
+                      state: 'Allow Always'
+                  sequence:
+                    - action: script.intellicharge_apply_allow
+
+                    - action: logbook.log
+                      data:
+                        name: IntelliCharge
+                        message: >
+                          Recovery: gendannede Allow Always efter restart
+
+            - action: input_boolean.turn_off
+              target:
+                entity_id: input_boolean.intellicharge_overridden_by_ev
+
+  mode: single
+
+- id: ev_intellicharge_acquire
+  alias: EV - IntelliCharge Acquire
+  initial_state: false
+  mode: single
+
+  trigger:
+    - platform: state
+      entity_id: binary_sensor.ev_intellicharge_override_needed
+      to: "on"
+      for: "00:01:00"
+
+  condition:
+    - condition: state
+      entity_id: input_boolean.ev_ha_control_enabled
+      state: "on"
+
+    - condition: template
+      value_template: >
+        {{ not is_state('sensor.ev_intellicharge_smart_status_2', 'Allow Always') }}
+
+  action:
+    - service: script.intellicharge_apply_allow
+
+    - service: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.ev_intellicharge_settling
+
+    - service: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_intellicharge_last_change
+      data:
+        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"  
+
+- id: ev_intellicharge_release
+  alias: EV - IntelliCharge Release
+  initial_state: false
+  mode: single
+
+  trigger:
+    - platform: state
+      entity_id: binary_sensor.ev_intellicharge_override_needed
+      to: "off"
+      for: "00:03:00"
+
+  condition:
+    - condition: state
+      entity_id: input_boolean.ev_ha_control_enabled
+      state: "on"
+
+    - condition: template
+      value_template: >
+        {{ is_state('sensor.ev_intellicharge_smart_status_2', 'Allow Always') }}
+
+  action:
+    - service: script.intellicharge_apply_smart
+
+    - service: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.ev_intellicharge_settling
+
+    - service: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_intellicharge_last_change
+      data:
+        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+- id: ev_intellicharge_settling_clear
+  alias: EV - IntelliCharge Settling Clear
+  initial_state: false
+  mode: restart
+
+  trigger:
+    - platform: state
+      entity_id: input_boolean.ev_intellicharge_settling
+      to: "on"
+
+  action:
+    - delay: "00:03:00"
+
+    - service: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.ev_intellicharge_settling
+
+- id: ev_ha_control_disabled_failsafe
+  alias: EV - HA Control Disabled Failsafe
+  mode: single
+
+  trigger:
+    - platform: state
+      entity_id: input_boolean.ev_ha_control_enabled
+      to: "off"
+
+  action:
+    - service: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.ev_intellicharge_settling
+
+    - if:
+        - condition: template
+          value_template: >
+            {{ is_state('sensor.ev_intellicharge_smart_status_2', 'Allow Always') }}
+      then:
+        - service: script.intellicharge_apply_smart
+
+- id: 'ev_sun_optimized_to_auto_at_sunset'
+  alias: EV - Sun Optimized to Auto at sunset
+  description: Skifter fra Sun Optimized til Auto ved solnedgang
+  triggers:
+    - trigger: state
+      entity_id:
+        - sun.sun
+      to: 'below_horizon'
+  conditions:
+    - condition: state
+      entity_id: input_select.ev_charge_mode
+      state: 'Sun Optimized'
+  actions:
+    - action: input_select.select_option
+      target:
+        entity_id: input_select.ev_charge_mode
+      data:
+        option: 'Auto'
+    - action: logbook.log
+      data:
+        name: EV
+        message: 'Sun Optimized afsluttet ved solnedgang – skifter til Auto'
+  mode: single
+
+- id: 'ev_stop_charging_when_stop_mode'
+  alias: EV - Stop charging when Stop mode
+  triggers:
+    - trigger: state
+      entity_id: input_select.ev_charge_mode
+      to: 'Stop'
+
+    - trigger: state
+      entity_id: sensor.ev_charge_decision
+      to: 'VENT'
+      for:
+        seconds: 10
+
+  conditions:
+    - condition: template
+      value_template: >
+        {{
+          states('input_select.ev_charge_mode') == 'Stop'
+          or states('sensor.ev_target_ampere_effective') | int(0) == 0
+        }}
+
+  actions:
+    - action: script.ev_charge_stop
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_last_sent_ampere
+      data:
+        value: 0
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_segment_ampere
+      data:
+        value: 0
+
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          MODEL B: Stop sendt til Easee
+          mode={{ states('input_select.ev_charge_mode') }},
+          decision={{ states('sensor.ev_charge_decision') }},
+          target={{ states('sensor.ev_target_ampere_effective') }},
+          power={{ states('sensor.eh45khwp_power') }} kW
+
+  mode: restart  
+
+- id: '1776876667586'
+  alias: Fryser alarm
+  description: ''
+  triggers:
+    - trigger: state
+      entity_id:
+        - binary_sensor.fryser_alarm
+      to: 'on'
+  conditions: []
+  actions:
+    - action: notify.mobile_app_pixel_10_pro
+      data:
+        title: Fryser alarm
+        message: Fryseren er for varm.
+  mode: single
+
+- id: '1776876736452'
+  alias: Fryser alarm OK
+  description: ''
+  triggers:
+    - trigger: state
+      entity_id:
+        - binary_sensor.fryser_alarm
+      to: 'off'
+  conditions: []
+  actions:
+    - action: notify.mobile_app_pixel_10_pro
+      data:
+        title: Fryser OK
+        message: Fryseren er tilbage på normal temperatur.
+  mode: single
+
+
+- id: 'ev_segment_start_on_charging'
+  alias: EV - Segment start on charging
+  description: Starter energisegment når fysisk opladning starter
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.eh45khwp_power
+      above: 0.5
+      for:
+        seconds: 20
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+    - condition: state
+      entity_id: input_boolean.ev_segment_open
+      state: 'off'
+  actions:
+    - if:
+        - condition: template
+          value_template: >
+            {{
+              states('input_number.ev_session_energy_latched_kwh') | float(0) <= 0.05
+              and states('sensor.eh45khwp_session_energy') | float(0) <= 0.05
+            }}
+      then:
+        - action: input_datetime.set_datetime
+          target:
+            entity_id: input_datetime.ev_session_started_at
+          data:
+            datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+    - action: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_segment_started_at
+      data:
+        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_segment_start_energy_kwh
+      data:
+        value: "{{ states('sensor.eh45khwp_session_energy') | float(0) | round(2) }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_segment_ampere
+      data:
+        value: >
+          {% set eff = states('sensor.ev_target_ampere_effective') | int(0) %}
+          {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
+          {{ eff if eff >= min_amp else min_amp }}
+
+    - action: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.ev_segment_open
+
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          Segment startet
+          (amp={{ states('sensor.ev_target_ampere_effective') }} A,
+          session_energy={{ states('sensor.eh45khwp_session_energy') }} kWh)
+  mode: single
+
+
+- id: 'ev_segment_close_on_ampere_change'
+  alias: EV - Segment close on ampere change
+  description: Logger energisegment når ampere ændres under aktiv opladning
+
+  triggers:
+    - trigger: state
+      entity_id:
+        - sensor.ev_target_ampere_effective
+      for:
+        seconds: 10
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+    - condition: numeric_state
+      entity_id: sensor.eh45khwp_power
+      above: 0.5
+
+    - condition: state
+      entity_id: input_boolean.ev_segment_open
+      state: 'on'
+
+    - condition: template
+      value_template: >
+        {{
+          states('sensor.ev_target_ampere_effective') | int(0)
+          !=
+          states('input_number.ev_segment_ampere') | int(0)
+        }}
+
+  actions:
+    - variables:
+        segment_start_energy: "{{ states('input_number.ev_segment_start_energy_kwh') | float(0) }}"
+        segment_end_energy: "{{ states('sensor.eh45khwp_session_energy') | float(0) }}"
+        segment_kwh: "{{ [segment_end_energy - segment_start_energy, 0] | max | round(2) }}"
+        old_ampere: "{{ states('input_number.ev_segment_ampere') | int(0) }}"
+        new_ampere: "{{ states('sensor.ev_target_ampere_effective') | int(0) }}"
+        started_at: "{{ states('input_datetime.ev_segment_started_at') }}"
+        ended_at: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+        mode: "{{ states('input_text.ev_session_mode_latched') }}"
+
+    - if:
+        - condition: template
+          value_template: >
+            {{ segment_kwh > 0.01 }}
+      then:
+        - if:
+            - condition: template
+              value_template: >
+                {{ old_ampere == 0 }}
+          then:
+            - action: logbook.log
+              data:
+                name: EV Segment Warning
+                message: >
+                  0A segment med energi registreret:
+                  {{ started_at }} → {{ ended_at }},
+                  energy={{ segment_kwh }} kWh,
+                  new_amp={{ new_ampere }} A
+
+        - action: script.ev_log_segment_csv
+          data:
+            line: >-
+              {{ [
+                'segment_stop',
+                started_at,
+                ended_at,
+                mode,
+                old_ampere,
+                segment_kwh,
+                segment_end_energy | float(0) | round(2),
+                states('input_number.ev_session_start_soc'),
+                states('input_number.ev_session_target_soc'),
+                states('input_number.ev_session_battery_kwh')
+              ] | join(',') }}
+
+        - action: input_text.set_value
+          target:
+            entity_id: input_text.ev_last_segment_summary
+          data:
+            value: >
+              {{ started_at }} → {{ ended_at }}
+              · mode={{ mode }}
+              · amp={{ old_ampere }} A
+              · energy={{ segment_kwh }} kWh
+
+        - action: logbook.log
+          data:
+            name: EV Segment
+            message: >
+              {{ started_at }} → {{ ended_at }},
+              mode={{ mode }},
+              amp={{ old_ampere }} A,
+              energy={{ segment_kwh }} kWh,
+              session_energy={{ segment_end_energy }} kWh
+
+    - if:
+        - condition: template
+          value_template: "{{ new_ampere == 0 }}"
+      then:
+        - action: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.ev_segment_open
+
+        - action: logbook.log
+          data:
+            name: EV Segment
+            message: >
+              Segment lukket ved ampere=0 for at undgå dobbelt segment_stop.
+              old_ampere={{ old_ampere }},
+              segment_kwh={{ segment_kwh }},
+              started_at={{ started_at }},
+              ended_at={{ ended_at }}
+      else:
+        - action: input_datetime.set_datetime
+          target:
+            entity_id: input_datetime.ev_segment_started_at
+          data:
+            datetime: "{{ ended_at }}"
+
+        - action: input_number.set_value
+          target:
+            entity_id: input_number.ev_segment_start_energy_kwh
+          data:
+            value: "{{ segment_end_energy | round(2) }}"
+
+    - if:
+        - condition: template
+          value_template: >
+            {{ new_ampere == 0 }}
+      then:
+        - action: logbook.log
+          data:
+            name: EV Segment Debug
+            message: >
+              Segment ampere sættes til 0 efter segment-close.
+              old_ampere={{ old_ampere }},
+              new_ampere={{ new_ampere }},
+              segment_kwh={{ segment_kwh }},
+              started_at={{ started_at }},
+              ended_at={{ ended_at }},
+              power={{ states('sensor.eh45khwp_power') }} kW,
+              decision={{ states('sensor.ev_charge_decision') }},
+              target_reason={{ state_attr('sensor.ev_target_ampere_raw', 'reason') }}
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_segment_ampere
+      data:
+        value: "{{ new_ampere }}"
+
+  mode: single
+
+- id: 'ev_session_metrics_initialize'
+  alias: EV - Session metrics initialize
+  description: >
+    MODEL B - Initialiserer sessionstællere ved ny EV-session.
+    Gemmer Easees energiværdi ved sessionstart, så HA-sessionens energi beregnes som delta.
+    VW-data bruges ikke som styringsinput.
+
+  triggers:
+    - trigger: state
+      entity_id: input_boolean.ev_session_active
+      to: 'on'
+      id: session_activated
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+  actions:
+    - variables:
+        trigger_reason: "{{ trigger.id | default('unknown') }}"
+        old_latched_energy: "{{ states('input_number.ev_session_energy_latched_kwh') | float(0) | round(2) }}"
+        easee_session_energy: "{{ states('sensor.eh45khwp_session_energy') | float(0) | round(2) }}"
+        target_ampere: "{{ states('sensor.ev_target_ampere_effective') | int(0) }}"
+        charge_mode: "{{ states('input_select.ev_charge_mode') }}"
+        session_start_soc: >
+          {{ states('input_number.ev_guest_planned_start_soc') | float(0) | round(1) }}
+        session_target_soc: >
+          {{ states('input_number.ev_guest_planned_target_soc') | float(80) | round(1) }}
+        session_battery_kwh: "{{ states('input_number.ev_guest_planned_battery_kwh') | float(77) | round(1) }}"
+
+    - action: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.ev_session_logged
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_start_soc
+      data:
+        value: "{{ session_start_soc }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_target_soc
+      data:
+        value: "{{ session_target_soc }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_battery_kwh
+      data:
+        value: "{{ session_battery_kwh }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_energy_latched_kwh
+      data:
+        value: 0
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_easee_start_energy_kwh
+      data:
+        value: "{{ easee_session_energy }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_max_ampere
+      data:
+        value: "{{ target_ampere }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_segment_start_energy_kwh
+      data:
+        value: "{{ easee_session_energy }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_segment_ampere
+      data:
+        value: "{{ target_ampere }}"
+
+    - action: input_text.set_value
+      target:
+        entity_id: input_text.ev_session_mode_latched
+      data:
+        value: "{{ charge_mode }}"
+
+    - action: input_datetime.set_datetime
+      target:
+        entity_id:
+          - input_datetime.ev_session_started_at
+          - input_datetime.ev_segment_started_at
+      data:
+        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          MODEL B: Session metrics initialiseret
+          (trigger={{ trigger_reason }},
+          mode={{ charge_mode }},
+          amp={{ target_ampere }},
+          start_soc={{ session_start_soc }},
+          target_soc={{ session_target_soc }},
+          battery={{ session_battery_kwh }} kWh,
+          old_latched_energy={{ old_latched_energy }} kWh,
+          easee_start_energy={{ easee_session_energy }} kWh)
+
+  mode: single
+
+- id: 'ev_session_energy_latch'
+  alias: EV - Session energy latch
+  description: >
+    MODEL B - Live energitæller baseret på faktisk ladeeffekt.
+    Opdaterer HA-sessionens leverede energi hvert 10. sekund ud fra
+    sensor.eh45khwp_power. Bruges til SOC, restenergi og resttid.
+    Easee session energy bruges ikke længere som live-kilde.
+
+  triggers:
+    - trigger: time_pattern
+      seconds: "/10"
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+    - condition: numeric_state
+      entity_id: sensor.eh45khwp_power
+      above: 0.5
+
+  actions:
+    - variables:
+        power_kw: "{{ states('sensor.eh45khwp_power') | float(0) }}"
+        old_latched: "{{ states('input_number.ev_session_energy_latched_kwh') | float(0) }}"
+        added_kwh: "{{ (states('sensor.eh45khwp_power') | float(0) * 10 / 3600) | round(4) }}"
+        new_latched: >
+          {{
+            (
+              states('input_number.ev_session_energy_latched_kwh') | float(0)
+              +
+              (states('sensor.eh45khwp_power') | float(0) * 10 / 3600)
+            ) | round(3)
+          }}
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_energy_latched_kwh
+      data:
+        value: "{{ new_latched }}"
+
+  mode: single
+
+- id: 'ev_session_rebaseline_on_manual_start_soc_change'
+  alias: EV - Session rebaseline on manual start SOC change
+  enabled: false
+  description: >
+    MODEL B - Når manuel start-SOC ændres, bruges den nye værdi straks som aktuel
+    SOC-baseline, hvis bilen ikke lader. Sessionens leverede energi nulstilles,
+    og Easee-referencepunktet flyttes til aktuel Easee session energy.
+    VW-data bruges ikke som betingelse.
+
+  triggers:
+    - trigger: state
+      entity_id: input_number.ev_guest_planned_start_soc
+
+  conditions:
+    - condition: numeric_state
+      entity_id: sensor.eh45khwp_power
+      below: 0.5
+
+  actions:
+    - variables:
+        new_start_soc: "{{ states('input_number.ev_guest_planned_start_soc') | float(0) | round(1) }}"
+        easee_current: "{{ states('sensor.eh45khwp_session_energy') | float(0) | round(2) }}"
+        old_session_start_soc: "{{ states('input_number.ev_session_start_soc') | float(0) | round(1) }}"
+        old_latched_energy: "{{ states('input_number.ev_session_energy_latched_kwh') | float(0) | round(2) }}"
+        old_easee_start: "{{ states('input_number.ev_session_easee_start_energy_kwh') | float(0) | round(2) }}"
+        session_active: "{{ states('input_boolean.ev_session_active') }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_start_soc
+      data:
+        value: "{{ new_start_soc }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_energy_latched_kwh
+      data:
+        value: 0
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_easee_start_energy_kwh
+      data:
+        value: "{{ easee_current }}"
+
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          MODEL B: Manual Start SOC rebaseline
+          (session_active={{ session_active }},
+          old_start_soc={{ old_session_start_soc }},
+          new_start_soc={{ new_start_soc }},
+          old_latched_energy={{ old_latched_energy }} kWh,
+          old_easee_start={{ old_easee_start }} kWh,
+          new_easee_start={{ easee_current }} kWh)
+
+  mode: restart
+
+# LEGACY / DISABLED
+# Må ikke bruges: Easee nulstiller session_energy for sent.
+# Beholdes kun som reference.
+- id: 'ev_session_finalize_on_energy_reset'
+  alias: EV - Session finalize on energy reset
+  initial_state: false
+  description: Afslutter EV-session når Easee Session Energy nulstilles efter aktiv session
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.eh45khwp_session_energy
+      below: 0.01
+      for:
+        minutes: 1
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+    - condition: template
+      value_template: >
+        {{ states('input_number.ev_session_energy_latched_kwh') | float(0) > 0.05 }}
+  actions:
+    - variables:
+        final_energy: "{{ states('input_number.ev_session_energy_latched_kwh') | float(0) }}"
+        segment_start_energy: "{{ states('input_number.ev_segment_start_energy_kwh') | float(0) }}"
+        segment_kwh: "{{ [final_energy - segment_start_energy, 0] | max | round(2) }}"
+        old_ampere: "{{ states('sensor.ev_target_ampere_effective') | int(0) }}"
+        started_at: "{{ states('input_datetime.ev_segment_started_at') }}"
+        ended_at: >
+          {% set finished = states('input_datetime.ev_session_finished_at') %}
+          {% if finished not in ['unknown', 'unavailable', '', 'none'] %}
+            {{ finished }}
+          {% else %}
+            {{ now().strftime('%Y-%m-%d %H:%M:%S') }}
+          {% endif %}
+        session_started_at: "{{ states('input_datetime.ev_session_started_at') }}"
+        mode: "{{ states('input_text.ev_session_mode_latched') }}"
+
+    - if:
+        - condition: state
+          entity_id: input_boolean.ev_segment_open
+          state: 'on'
+      then:
+        - action: input_text.set_value
+          target:
+            entity_id: input_text.ev_last_segment_summary
+          data:
+            value: >
+              {{ started_at }} → {{ ended_at }}
+              · mode={{ mode }}
+              · amp={{ old_ampere }} A
+              · energy={{ segment_kwh }} kWh
+
+        - action: logbook.log
+          data:
+            name: EV Segment
+            message: >
+              Final segment:
+              {{ started_at }} → {{ ended_at }},
+              mode={{ mode }},
+              amp={{ old_ampere }} A,
+              energy={{ segment_kwh }} kWh
+
+        - action: script.ev_log_segment_csv
+          data:
+            line: "{{ [
+              'finalize_on_energy_reset_final_segment',
+              started_at,
+              ended_at,
+              mode,
+              old_ampere,
+              segment_kwh,
+              final_energy | round(2),
+              states('input_number.ev_session_start_soc'),
+              states('input_number.ev_session_target_soc'),
+              states('input_number.ev_session_battery_kwh')
+            ] | join(',') }}"
+
+        - action: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.ev_segment_open
+
+    - action: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_session_finished_at
+      data:
+        datetime: "{{ ended_at }}"
+
+    - action: input_text.set_value
+      target:
+        entity_id: input_text.ev_last_session_summary
+      data:
+        value: >
+          {{ session_started_at }} → {{ ended_at }}
+          · mode={{ mode }}
+          · energy={{ final_energy | round(2) }} kWh
+          · max_amp={{ states('input_number.ev_session_max_ampere') }} A
+
+    - action: script.ev_log_session_csv
+      data:
+        line: "{{ [
+          'session',
+          session_started_at,
+          ended_at,
+          mode,
+          final_energy | round(2),
+          states('input_number.ev_session_max_ampere'),
+          states('input_number.ev_session_start_soc'),
+          states('input_number.ev_session_target_soc'),
+          states('input_number.ev_session_battery_kwh')
+        ] | join(',') }}"
+
+    - action: input_boolean.turn_off
+      target:
+        entity_id:
+          - input_boolean.ev_session_active
+          - input_boolean.ev_start_delay_active
+          - input_boolean.ev_segment_open
+
+    - if:
+        - condition: template
+          value_template: >
+            {{ not is_state('sensor.ev_intellicharge_smart_status_2', 'Smart') }}
+      then:
+        - action: script.intellicharge_apply_smart
+
+    - action: input_boolean.turn_off
+      target:
+        entity_id:
+          - input_boolean.intellicharge_overridden_by_ev
+
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          Session afsluttet
+          (mode={{ mode }},
+          energy={{ final_energy | round(2) }} kWh,
+          max_amp={{ states('input_number.ev_session_max_ampere') }} A)
+
+  mode: single
+
+- id: 'ev_sync_session_target_with_car'
+  alias: EV - Sync session target with car
+  description: "MODEL B: VW target bruges kun som debug og overskriver ikke HA session target"
+
+  triggers:
+    - trigger: state
+      entity_id:
+        - sensor.battery_target_charge_level
+
+    - trigger: state
+      entity_id:
+        - sensor.ev_effective_target_soc
+
+    - trigger: homeassistant
+      event: start
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+  actions:
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          MODEL B: VW target observeret, men session target ændres ikke.
+          (vw_target={{ states('sensor.battery_target_charge_level') }},
+          effective_target={{ states('sensor.ev_effective_target_soc') }},
+          session_target={{ states('input_number.ev_session_target_soc') }})
+
+  mode: single
+
+- id: 'ev_sun_optimized_latch_export'
+  alias: EV - Sun Optimized latch export
+  description: Gemmer sidste positive eksportværdi før inverteren lukker ned
+  triggers:
+    - trigger: state
+      entity_id:
+        - sensor.grid_export_power_average_2m_safe
+  conditions:
+    - condition: template
+      value_template: >
+        {{ states('sensor.grid_export_power_average_2m_safe') | float(0) > 0.2 }}
+  actions:
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_sun_optimized_latched_export_kw
+      data:
+        value: "{{ states('sensor.grid_export_power_average_2m_safe') | float(0) | round(2) }}"
+  mode: restart
+
+- id: 'ev_roll_ready_by_when_target_reached'
+  alias: EV - Roll Ready By when target reached
+  description: Rykker Ready By til næste dag kl. 09:00 når ønsket SOC er nået efter opladning
+
+  triggers:
+    - trigger: state
+      entity_id:
+        - binary_sensor.ev_session_complete
+      to: 'on'
+      for:
+        minutes: 1
+
+    - trigger: state
+      entity_id:
+        - sensor.ev_effective_soc
+      for:
+        minutes: 1
+
+    - trigger: state
+      entity_id:
+        - sensor.ev_remaining_energy_live_kwh
+      for:
+        minutes: 1
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+    - condition: template
+      value_template: >
+        {{
+          states('input_number.ev_session_energy_latched_kwh') | float(0) > 0.05
+        }}
+
+    - condition: template
+      value_template: >
+        {{
+          is_state('binary_sensor.ev_session_complete', 'on')
+          or states('sensor.ev_remaining_energy_live_kwh') | float(999) <= 0.5
+        }}
+
+  actions:
+    - variables:
+        next_ready: "{{ (today_at('09:00:00') + timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S') }}"
+
+    - action: input_datetime.set_datetime
+      target:
+        entity_id:
+          - input_datetime.ev_planned_ready_by
+          - input_datetime.ev_session_ready_by
+      data:
+        datetime: "{{ next_ready }}"
+
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          MODEL B: Ready By rykket til {{ next_ready }} fordi sessionen er komplet
+          efter opladning.
+          (effective_soc={{ states('sensor.ev_effective_soc') }},
+          target={{ states('sensor.ev_effective_target_soc') }},
+          remaining={{ states('sensor.ev_remaining_energy_live_kwh') }} kWh,
+          delivered={{ states('input_number.ev_session_energy_latched_kwh') }} kWh)
+
+  mode: single
+
+- id: 'ev_roll_ready_by_if_no_charge'
+  alias: EV - Roll Ready By if no charge
+  description: Rykker Ready By til næste dag kl. 09:00 hvis der ikke blev ladet inden deadline
+  triggers:
+    - trigger: time
+      at: input_datetime.ev_session_ready_by
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+    - condition: template
+      value_template: >
+        {{
+          states('input_number.ev_session_energy_latched_kwh') | float(0) <= 0.05
+          and states('sensor.eh45khwp_session_energy') | float(0) <= 0.05
+          and states('sensor.eh45khwp_power') | float(0) <= 0.5
+        }}
+
+  actions:
+    - variables:
+        next_ready: "{{ (today_at('09:00:00') + timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S') }}"
+
+    - action: input_datetime.set_datetime
+      target:
+        entity_id:
+          - input_datetime.ev_planned_ready_by
+          - input_datetime.ev_session_ready_by
+      data:
+        datetime: "{{ next_ready }}"
+
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          Ready By rykket til {{ next_ready }} fordi der ikke blev ladet inden deadline.
+
+  mode: single
+
+- id: 'ev_refresh_car_soc_after_restart'
+  alias: EV - Refresh car SOC after restart
+  description: "MODEL B: Opdaterer VW-debug efter HA restart, men ændrer ikke HA's session-SOC"
+  triggers:
+    - trigger: homeassistant
+      event: start
+
+  actions:
+    - delay: "00:00:45"
+
+    # MODEL B: VW er kun debug/telemetry. Fejl her må ikke påvirke sessionens SOC.
+#VW update midlertidigt deaktiveret mens Volkswagen Connect er nede.
+# Model B bruger manuel Start SOC og Easee energy som fallback.
+#    - action: homeassistant.update_entity
+#      target:
+#        entity_id:
+#          - sensor.battery_level
+#          - sensor.battery_target_charge_level
+
+    - delay: "00:00:15"
+
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          MODEL B efter restart:
+          VW forsøgt opdateret som debug
+          (vw_soc={{ states('sensor.battery_level') }},
+          vw_target={{ states('sensor.battery_target_charge_level') }},
+          effective_soc={{ states('sensor.ev_effective_soc') }},
+          effective_target={{ states('sensor.ev_effective_target_soc') }},
+          calculated_soc={{ states('sensor.ev_calculated_soc') }})
+
+  mode: single
+
+- id: 'ev_segment_close_on_charging_stop'
+  alias: EV - Segment close on charging stop
+  description: Lukker aktuelt energisegment når fysisk ladeeffekt stopper
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.eh45khwp_power
+      below: 0.5
+      for:
+        minutes: 3
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+    - condition: state
+      entity_id: input_boolean.ev_segment_open
+      state: 'on'
+
+  actions:
+    - variables:
+        segment_start_energy: "{{ states('input_number.ev_segment_start_energy_kwh') | float(0) }}"
+        segment_end_energy: "{{ states('sensor.eh45khwp_session_energy') | float(0) }}"
+        segment_kwh: "{{ [segment_end_energy - segment_start_energy, 0] | max | round(2) }}"
+        old_ampere: "{{ states('sensor.ev_target_ampere_effective') | int(0) }}"
+        started_at: "{{ states('input_datetime.ev_segment_started_at') }}"
+        ended_at: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+        mode: "{{ states('input_text.ev_session_mode_latched') }}"
+
+    - if:
+        - condition: template
+          value_template: "{{ segment_kwh >= 0.2 }}"
+      then:
+        - action: input_text.set_value
+          target:
+            entity_id: input_text.ev_last_segment_summary
+          data:
+            value: >
+              {{ started_at }} → {{ ended_at }}
+              · mode={{ mode }}
+              · amp={{ old_ampere }} A
+              · energy={{ segment_kwh }} kWh
+
+        - action: script.ev_log_segment_csv
+          data:
+            line: >-
+              {{ [
+                'close_on_charging_stop_segment_stop',
+                started_at,
+                ended_at,
+                mode,
+                old_ampere,
+                segment_kwh,
+                segment_end_energy | float(0) | round(2),
+                states('input_number.ev_session_start_soc'),
+                states('input_number.ev_session_target_soc'),
+                states('input_number.ev_session_battery_kwh')
+              ] | join(',') }}
+
+        - action: logbook.log
+          data:
+            name: EV Segment
+            message: >
+              Segment lukket ved stop:
+              {{ started_at }} → {{ ended_at }},
+              mode={{ mode }},
+              amp={{ old_ampere }} A,
+              energy={{ segment_kwh }} kWh
+      else:
+        - action: logbook.log
+          data:
+            name: EV Segment
+            message: >
+              Ignoreret støjsegment:
+              {{ started_at }} → {{ ended_at }},
+              mode={{ mode }},
+              amp={{ old_ampere }} A,
+              energy={{ segment_kwh }} kWh
+
+    - action: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.ev_segment_open
+
+  mode: single
+
+- id: 'ev_init_session_when_ready'
+  alias: EV - Init session when ready
+  description: >
+    MODEL B - Initialiserer EV-session fra manuelle Model B-inputs.
+    Låser start-SOC, target-SOC, batteristørrelse og Easee energy reference ved sessionstart.
+    VW-data bruges ikke som styringsinput.
+
+  triggers:
+    - trigger: state
+      entity_id:
+        - input_select.ev_charge_mode
+        - input_boolean.ev_ha_control_enabled
+        - binary_sensor.ev_cable_connected_effective
+        - input_number.ev_guest_planned_start_soc
+        - input_number.ev_guest_planned_target_soc
+        - input_number.ev_guest_planned_battery_kwh
+
+    - trigger: homeassistant
+      event: start
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_ha_control_enabled
+      state: 'on'
+
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'off'
+
+    - condition: state
+      entity_id: input_boolean.ev_session_logged
+      state: 'off' 
+
+    - condition: template
+      value_template: >
+        {{ states('input_select.ev_charge_mode') in
+           ['Auto', 'Charge Now', 'Sun Optimized', 'Monta Guest'] }}
+
+    - condition: state
+      entity_id: binary_sensor.ev_cable_connected_effective
+      state: 'on'
+
+    - condition: template
+      value_template: >
+        {{ states('sensor.eh45khwp_status') != 'disconnected' }}
+
+    - condition: template
+      value_template: >
+        {{ states('sensor.ev_remaining_energy_live_kwh') | float(0) > 0.5 }}
+
+  actions:
+    - variables:
+        mode: "{{ states('input_select.ev_charge_mode') }}"
+        started_at: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+        easee_session_energy: "{{ states('sensor.eh45khwp_session_energy') | float(0) | round(2) }}"
+        initial_ampere: "{{ states('sensor.ev_target_ampere_effective') | int(0) }}"
+        start_soc: >
+          {{ states('input_number.ev_guest_planned_start_soc') | float(0) | round(1) }}
+        target_soc: >
+          {{ states('input_number.ev_guest_planned_target_soc') | float(80) | round(1) }}
+        battery_kwh: "{{ states('input_number.ev_guest_planned_battery_kwh') | float(77) | round(1) }}"
+
+    - action: input_boolean.turn_off
+      target:
+        entity_id:
+          - input_boolean.ev_session_logged
+          - input_boolean.ev_segment_open
+          - input_boolean.ev_start_delay_active
+
+    - action: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_session_started_at
+      data:
+        datetime: "{{ started_at }}"
+
+    - action: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_segment_started_at
+      data:
+        datetime: "{{ started_at }}"
+
+    - action: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_session_ready_by
+      data:
+        datetime: "{{ states('input_datetime.ev_planned_ready_by') }}"
+
+    - action: input_text.set_value
+      target:
+        entity_id: input_text.ev_session_mode_latched
+      data:
+        value: "{{ mode }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_start_soc
+      data:
+        value: "{{ start_soc }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_target_soc
+      data:
+        value: "{{ target_soc }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_battery_kwh
+      data:
+        value: "{{ battery_kwh }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_energy_latched_kwh
+      data:
+        value: 0
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_easee_start_energy_kwh
+      data:
+        value: "{{ easee_session_energy }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_session_max_ampere
+      data:
+        value: "{{ initial_ampere }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_segment_start_energy_kwh
+      data:
+        value: 0
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_segment_ampere
+      data:
+        value: "{{ initial_ampere }}"
+
+    - action: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.ev_session_active
+
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          MODEL B: Session initialiseret
+          (mode={{ mode }},
+          start_soc={{ start_soc }},
+          target_soc={{ target_soc }},
+          battery={{ battery_kwh }} kWh,
+          easee_start_energy={{ easee_session_energy }} kWh,
+          initial_ampere={{ initial_ampere }},
+          ready_by={{ states('input_datetime.ev_session_ready_by') }})
+
+  mode: single
+
+- id: 'ev_session_finish_on_logical_stop'
+  alias: EV - Session finish on logical stop
+  description: >
+    MODEL B - Afslutter EV-session ved logisk stop.
+    Afslutter også hvis bilen/Easee stopper opladningen, og HA er inden for
+    2 %-point eller 1,5 kWh fra target.
+
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.ev_session_complete
+      to: 'on'
+      for:
+        minutes: 1
+      id: session_complete
+
+    - trigger: numeric_state
+      entity_id: sensor.eh45khwp_power
+      below: 0.5
+      for:
+        minutes: 2
+      id: charge_power_zero
+
+    - trigger: state
+      entity_id: input_select.ev_charge_mode
+      to: 'Stop'
+      id: mode_stop
+
+    - trigger: state
+      entity_id: binary_sensor.charging_cable_connected
+      to: 'off'
+      id: vw_cable_off
+
+    - trigger: state
+      entity_id: input_boolean.ev_ha_control_enabled
+      to: 'off'
+      id: ha_control_off
+
+    - trigger: state
+      entity_id: sensor.eh45khwp_status
+      to: 'disconnected'
+      for:
+        minutes: 1
+      id: easee_disconnected
+
+    - trigger: homeassistant
+      event: start
+      id: ha_start
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+  actions:
+    - if:
+        - condition: template
+          value_template: "{{ trigger.id == 'ha_start' }}"
+      then:
+        - delay:
+            seconds: 30
+
+    - variables:
+        trigger_reason: "{{ trigger.id | default('unknown') }}"
+        ended_at: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+        started_at: "{{ states('input_datetime.ev_session_started_at') }}"
+        mode: "{{ states('input_text.ev_session_mode_latched') }}"
+        energy: "{{ states('input_number.ev_session_energy_latched_kwh') | float(0) | round(2) }}"
+        already_logged: "{{ is_state('input_boolean.ev_session_logged', 'on') }}"
+        has_energy: "{{ states('input_number.ev_session_energy_latched_kwh') | float(0) > 0.05 }}"
+        charger_power_zero: "{{ states('sensor.eh45khwp_power') | float(0) < 0.5 }}"
+        final_soc: "{{ states('sensor.ev_calculated_soc') | float(0) | round(1) }}"
+        soc: "{{ states('sensor.ev_calculated_soc') | float(0) }}"
+        target_soc: "{{ states('input_number.ev_session_target_soc') | float(0) }}"
+        remaining_kwh: "{{ states('sensor.ev_remaining_energy_live_kwh') | float(99) }}"
+        soc_gap: >
+          {{
+            (
+              states('input_number.ev_session_target_soc') | float(0)
+              - states('sensor.ev_calculated_soc') | float(0)
+            ) | round(2)
+          }}
+        within_finish_tolerance: >
+          {{
+            (
+              states('input_number.ev_session_target_soc') | float(0)
+              - states('sensor.ev_calculated_soc') | float(0)
+            ) <= 2
+            or states('sensor.ev_remaining_energy_live_kwh') | float(99) <= 1.5
+          }}
+        startup_cleanup: >
+          {{
+            trigger.id == 'ha_start'
+            and is_state('sensor.eh45khwp_status', 'disconnected')
+            and states('sensor.eh45khwp_power') | float(0) < 0.5
+          }}
+        finish_allowed: >
+          {{
+            trigger.id in [
+              'session_complete',
+              'mode_stop',
+              'vw_cable_off',
+              'ha_control_off',
+              'easee_disconnected'
+            ]
+            or startup_cleanup
+            or (
+              trigger.id == 'charge_power_zero'
+              and states('sensor.eh45khwp_power') | float(0) < 0.5
+              and (
+                (
+                  states('input_number.ev_session_target_soc') | float(0)
+                  - states('sensor.ev_calculated_soc') | float(0)
+                ) <= 2
+                or states('sensor.ev_remaining_energy_live_kwh') | float(99) <= 1.5
+              )
+            )
+          }}
+
+    - condition: template
+      value_template: "{{ finish_allowed }}"
+
+    - if:
+        - condition: template
+          value_template: >
+            {{ not startup_cleanup and not already_logged and has_energy }}
+      then:
+        - action: input_datetime.set_datetime
+          target:
+            entity_id: input_datetime.ev_session_finished_at
+          data:
+            datetime: "{{ ended_at }}"
+
+        - action: script.ev_log_session_csv
+          data:
+            line: "{{ [
+              'session',
+              started_at,
+              ended_at,
+              mode,
+              energy,
+              states('input_number.ev_session_max_ampere'),
+              states('input_number.ev_session_start_soc'),
+              states('input_number.ev_session_target_soc'),
+              states('input_number.ev_session_battery_kwh')
+            ] | join(',') }}"
+
+        - action: input_boolean.turn_on
+          target:
+            entity_id: input_boolean.ev_session_logged
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_guest_planned_start_soc
+      data:
+        value: "{{ final_soc }}"
+
+    - action: input_boolean.turn_off
+      target:
+        entity_id:
+          - input_boolean.ev_session_active
+          - input_boolean.ev_start_delay_active
+          - input_boolean.ev_segment_open
+
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          MODEL B: Session afsluttet
+          (trigger={{ trigger_reason }},
+          mode={{ mode }},
+          energy={{ energy }} kWh,
+          soc={{ soc }} %,
+          final_soc={{ final_soc }} %,
+          target={{ target_soc }} %,
+          soc_gap={{ soc_gap }} %-point,
+          remaining={{ remaining_kwh }} kWh,
+          finish_tolerance={{ within_finish_tolerance }},
+          csv_logged={{ not startup_cleanup and not already_logged and has_energy }},
+          startup_cleanup={{ startup_cleanup }},
+          session_logged_before={{ already_logged }},
+          easee_status={{ states('sensor.eh45khwp_status') }},
+          power={{ states('sensor.eh45khwp_power') }} kW,
+          start={{ started_at }},
+          end={{ ended_at }})
+
+  mode: single
+
+- id: 'ev_segment_close_on_manual_stop'
+  alias: EV - Segment close on manual stop
+  description: Lukker åbent segment straks når EV mode sættes til Stop
+  triggers:
+    - trigger: state
+      entity_id: input_select.ev_charge_mode
+      to: 'Stop'
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_segment_open
+      state: 'on'
+
+  actions:
+    - variables:
+        segment_start_energy: "{{ states('input_number.ev_segment_start_energy_kwh') | float(0) }}"
+        segment_end_energy: "{{ states('sensor.eh45khwp_session_energy') | float(0) }}"
+        segment_kwh: "{{ [segment_end_energy - segment_start_energy, 0] | max | round(2) }}"
+        old_ampere: "{{ states('sensor.ev_target_ampere_effective') | int(0) }}"
+        started_at: "{{ states('input_datetime.ev_segment_started_at') }}"
+        ended_at: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+        mode: "{{ states('input_text.ev_session_mode_latched') }}"
+
+    - if:
+        - condition: template
+          value_template: "{{ segment_kwh | float(0) > 0.05 }}"
+      then:
+        - action: script.ev_log_segment_csv
+          data:
+            line: >-
+              {{ [
+                'close_on_manual_stop_segment_manual_stop',
+                started_at,
+                ended_at,
+                mode,
+                old_ampere,
+                segment_kwh,
+                segment_end_energy | float(0) | round(2),
+                states('input_number.ev_session_start_soc'),
+                states('input_number.ev_session_target_soc'),
+                states('input_number.ev_session_battery_kwh')
+              ] | join(',') }}
+
+      else:
+        - action: logbook.log
+          data:
+            name: EV
+            message: >
+              MODEL B: Manual stop segment ignored because energy was too low
+              (segment_kwh={{ segment_kwh }},
+              start_energy={{ segment_start_energy }},
+              end_energy={{ segment_end_energy }},
+              started_at={{ started_at }},
+              ended_at={{ ended_at }},
+              mode={{ mode }})
+
+    - action: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.ev_segment_open
+
+  mode: single  
+
+- id: 'ev_retry_start_when_waiting_for_authorization'
+  alias: EV - Retry start when waiting for authorization
+  description: Genstarter start hvis Easee hænger i Venter på godkendelse
+  initial_state: false  # This disables the Automation
+  triggers:
+    - trigger: state
+      entity_id: sensor.eh45khwp_status
+      to: 'Venter på godkendelse'
+      for:
+        minutes: 3
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_ha_control_enabled
+      state: 'on'
+
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+    - condition: state
+      entity_id: binary_sensor.ev_cable_connected_effective
+      state: 'on'
+
+    - condition: state
+      entity_id: sensor.ev_charge_decision
+      state: 'LAD'
+
+    - condition: template
+      value_template: >
+        {{ states('sensor.eh45khwp_power') | float(0) < 0.5 }}
+
+    - condition: template
+      value_template: >
+        {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
+        {{ states('sensor.ev_target_ampere_effective') | int(0) >= min_amp }}
+
+  actions:
+    - action: logbook.log
+      data:
+        name: EV
+        message: >
+          Watchdog retry:
+          status={{ states('sensor.eh45khwp_status') }},
+          reason={{ states('sensor.eh45khwp_reason_for_no_current') }},
+          power={{ states('sensor.eh45khwp_power') }},
+          amp={{ states('sensor.ev_target_ampere_effective') }}
+
+    - action: script.ev_charge_start
+
+  mode: single  
+
+- id: 'update_esp32_weather_display'
+  alias: "Update ESP32 Weather Display"
+  description: "Sends weather data to ESP32 display"
+
+  trigger:
+    - platform: state
+      entity_id: weather.forecast_home
+
+    - platform: time_pattern
+      minutes: "/5"
+
+    - platform: homeassistant
+      event: start
+
+  condition: []
+
+  action:
+    - service: esphome.ha_voice_waveshare_set_weather
+      data:
+        temperature: >
+          {{ state_attr('weather.forecast_home', 'temperature') | round(0) }}°C
+
+        condition: >
+          {{ states('weather.forecast_home') | replace('_', ' ') | title }}
+
+  mode: single
+
+- id: 'ev_debug_segment_ampere_zero'
+  alias: EV Debug - Segment ampere set to zero
+  description: Logger når segment-ampere bliver 0 under aktiv session
+  triggers:
+    - trigger: state
+      entity_id: input_number.ev_segment_ampere
+      to: '0.0'
+    - trigger: state
+      entity_id: input_number.ev_segment_ampere
+      to: '0'
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+  actions:
+    - action: logbook.log
+      data:
+        name: EV Segment Debug
+        message: >
+          ev_segment_ampere blev sat til 0.
+          target_effective={{ states('sensor.ev_target_ampere_effective') }} A,
+          target_raw={{ states('sensor.ev_target_ampere_raw') }} A,
+          power={{ states('sensor.eh45khwp_power') }} kW,
+          session_energy={{ states('sensor.eh45khwp_session_energy') }} kWh,
+          segment_start_energy={{ states('input_number.ev_segment_start_energy_kwh') }} kWh,
+          segment_started_at={{ states('input_datetime.ev_segment_started_at') }},
+          decision={{ states('sensor.ev_charge_decision') }},
+          mode={{ states('input_select.ev_charge_mode') }},
+          reason={{ state_attr('sensor.ev_target_ampere_raw', 'reason') }}
+
+  mode: restart
+
+- id: 'ev_session_max_ampere_track'
+  alias: EV - Session max ampere track
+  description: MODEL B - Opdaterer højeste ampere set i aktiv session
+  triggers:
+    - trigger: state
+      entity_id:
+        - sensor.ev_target_ampere_effective
+
+  conditions:
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
+  actions:
+    - variables:
+        current_ampere: "{{ states('sensor.ev_target_ampere_effective') | int(0) }}"
+        old_max: "{{ states('input_number.ev_session_max_ampere') | int(0) }}"
+
+    - if:
+        - condition: template
+          value_template: "{{ current_ampere > old_max }}"
+      then:
+        - action: input_number.set_value
+          target:
+            entity_id: input_number.ev_session_max_ampere
+          data:
+            value: "{{ current_ampere }}"
+
+  mode: restart
+
+- id: kokken_presence_light_on
+  alias: Køkken - Tænd lys ved presence når mørkt
+  mode: restart
+
+  trace:
+    stored_traces: 20
+
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.kitchen_human_presence_sensor_2_occupancy
+      to: "on"
+
+  conditions:
+    - condition: or
+      conditions:
+        - condition: time
+          before: "08:00:00"
+
+        - condition: template
+          value_template: >
+            {{ states('sensor.kitchen_human_presence_sensor_2_illuminance') | float(9999)
+               < states('input_number.koekken_lux_graense') | float(140) }}
+
+  actions:
+    - action: script.kokken_taend_alt
+
+    - delay:
+        seconds: 1
+
+    - action: script.kokken_taend_alt
+
+
+- id: kokken_presence_light_off
+  alias: Køkken - Sluk lys efter ingen presence
+  mode: restart
+
+  trace:
+    stored_traces: 20
+
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.kitchen_human_presence_sensor_2_occupancy
+      to: "off"
+      for:
+        minutes: 3
+
+  actions:
+    - action: script.kokken_sluk_alt
+
+    - delay:
+        seconds: 1
+
+    - action: script.kokken_sluk_alt
+
+- id: Maal opdateringsinterval
+  alias: Optimizers - mål batch opdateringsinterval
+  description: Måler reelt interval mellem optimizer-opdateringsbatches
+  mode: single
+
+  triggers:
+    - trigger: state
+      entity_id:
+        - sensor.fsp_ne_200473368_optimizer_jv22b9024565
+        - sensor.fsp_ne_200473368_optimizer_jv22b9024619
+        - sensor.fsp_ne_200473368_optimizer_ns2269106397
+        - sensor.fsp_ne_200473368_optimizer_ns2299069074
+        - sensor.fsp_ne_200473368_optimizer_jv2269a57989
+
+  conditions:
+    - condition: template
+      value_template: >
+        {{ trigger.from_state is not none
+          and trigger.to_state.state not in ['unknown', 'unavailable', 'none']
+          and trigger.from_state.state != trigger.to_state.state }}
+
+  actions:
+    - variables:
+        now_ts: "{{ now().timestamp() }}"
+        old_ts: "{{ as_timestamp(states('input_datetime.optimizer_last_update'), 0) }}"
+        delta_min: "{{ ((now_ts - old_ts) / 60) | round(1) }}"
+
+    # Ignorer opdateringer i samme batch, fx O1, O2, O3 få sekunder efter hinanden
+    - condition: template
+      value_template: >
+        {{ old_ts == 0 or delta_min > 5 }}
+
+    - if:
+        - condition: template
+          value_template: "{{ old_ts > 0 }}"
+      then:
+        - action: input_number.set_value
+          target:
+            entity_id: input_number.optimizer_update_interval
+          data:
+            value: "{{ delta_min }}"
+
+ 
+    - action: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.optimizer_last_update
+      data:
+        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"  
+
+- id: log_optimizer_data_5min
+  alias: PV - Log optimizerdata hvert 5. minut
+  mode: single
+
+  triggers:
+    - trigger: time_pattern
+      minutes: "/5"
+
+  actions:
+    - action: notify.send_message
+      target:
+        entity_id: notify.file
+      data:
+       message: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }};{{ states('sensor.fsp_ne_200473368_pv_1_input_power') | replace('.', ',') }};{{ states('sensor.fsp_ne_200473368_pv_2_input_power') | replace('.', ',') }};{{ states('sensor.fsp_ne_200473368_optimizer_jv22b9024565') | replace('.', ',') }};{{ states('sensor.fsp_ne_200473368_optimizer_jv22b9024619') | replace('.', ',') }};{{ states('sensor.fsp_ne_200473368_optimizer_ns2269106397') | replace('.', ',') }};{{ states('sensor.fsp_ne_200473368_optimizer_ns2299069074') | replace('.', ',') }};{{ states('sensor.fsp_ne_200473368_optimizer_jv2269a57989') | replace('.', ',') }}"
+
+- id: danfoss_eco_lavt_batteri
+  alias: Danfoss Eco - Lavt batteri
+  description: Advarer når en Danfoss Eco termostat har under 20 % batteri
+  mode: queued
+
+  triggers:
+    - trigger: numeric_state
+      entity_id:
+        - sensor.0_0_04_2f_b0_2b_5b_etrv_battery
+        - sensor.tv_stue_0_0_04_2f_50_1b_e7_etrv_venstre_battery
+        - sensor.0_0_04_2f_b0_2b_9e_etrv_battery
+        - sensor.tv_stue_0_0_04_2f_b4_44_64_etrv_hojre_battery
+      below: 20
+      id: threshold
+
+    - trigger: time
+      at: "10:00:00"
+      id: daily_check
+
+  actions:
+    - variables:
+        batteries:
+          - entity: sensor.0_0_04_2f_b0_2b_5b_etrv_battery
+            name: Kontor
+          - entity: sensor.tv_stue_0_0_04_2f_50_1b_e7_etrv_venstre_battery
+            name: TV Stue venstre
+          - entity: sensor.0_0_04_2f_b0_2b_9e_etrv_battery
+            name: Gæsteværelse
+          - entity: sensor.tv_stue_0_0_04_2f_b4_44_64_etrv_hojre_battery
+            name: TV Stue højre
+
+        low_batteries: >
+          {% set ns = namespace(items=[]) %}
+          {% for b in batteries %}
+            {% set value = states(b.entity) %}
+            {% if is_number(value) and value | float < 20 %}
+              {% set ns.items = ns.items + [b.name ~ ': ' ~ value ~ ' %'] %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.items | join(', ') }}
+
+    - condition: template
+      value_template: "{{ low_batteries | length > 0 }}"
+
+    - action: persistent_notification.create
+      data:
+        title: "Lavt batteri på Danfoss Eco"
+        message: >
+          Følgende termostatbatterier skal snart skiftes:
+          {{ low_batteries }}       
