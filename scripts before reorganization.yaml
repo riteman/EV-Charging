@@ -1,17 +1,3 @@
-# ============================================================
-# EV - CHARGER CONTROL
-# ============================================================
-
-# ------------------------------------------------------------
-# SCRIPT: EV CHARGE START
-# Called by:
-#   automation.ev_start_charging_stable
-# Calls:
-#   script.ev_set_target_ampere
-#   rest_command.easee_stop_charging
-#   rest_command.easee_start_charging
-# ------------------------------------------------------------
-
 ev_charge_start:
   alias: EV Charge Start
   mode: single
@@ -173,18 +159,6 @@ ev_charge_start:
           status={{ states('sensor.eh45khwp_status') }},
           reason={{ states('sensor.eh45khwp_reason_for_no_current') }},
           power={{ states('sensor.eh45khwp_power') }} kW)
-
-# ------------------------------------------------------------
-# SCRIPT: EV CHARGE STOP
-# Called by:
-#   automation.ev_stop_charging_stable
-#   automation.ev_stop_charging_immediate
-#   automation.ev_stop_charging_when_stop_mode
-# Calls:
-#   script.ev_set_target_ampere
-#   rest_command.easee_stop_charging
-# ------------------------------------------------------------
-
 ev_charge_stop:
   alias: EV Charge Stop
   mode: single
@@ -214,15 +188,13 @@ ev_charge_stop:
           power={{ states('sensor.eh45khwp_power') }},
           last_amp={{ states('input_number.ev_last_sent_ampere') }})
 
-# ------------------------------------------------------------
+# ============================================================
 # SCRIPT: EV SET TARGET AMPERE
-# Called by:
-#   script.ev_charge_start
-#   script.ev_charge_stop
-#   automation.ev_apply_target_ampere
-# Calls:
-#   rest_command.set_ioniq_ampere
-# ------------------------------------------------------------
+# Formål:
+#   Sender ønsket ampere til Easee.
+#   Ved HTTP 401 fornyes token og kommandoen sendes én gang igen.
+#   Segmenthåndtering ligger i separat script.
+# ============================================================
 
 ev_set_target_ampere:
   alias: EV - Set target ampere
@@ -332,7 +304,11 @@ ev_set_target_ampere:
           data:
             value: "{{ requested_ampere }}"
 
-        
+        # -> SCRIPT: EV SEGMENT OPEN FROM AMPERE
+        - action: script.ev_segment_open_from_ampere
+          data:
+            ampere: "{{ requested_ampere }}"
+
         - delay: "00:00:08"
 
         - action: homeassistant.update_entity
@@ -369,16 +345,174 @@ ev_set_target_ampere:
 
         - stop: "Easee afviste ampere-kommandoen"
 
-# ============================================================
 # EV - SESSION / SEGMENTS
+
+# ============================================================
+# SCRIPT: EV SEGMENT OPEN FROM AMPERE
+# Called by: ev_set_target_ampere
+# Formål:
+#   Åbner et nyt segment efter accepteret ladeampere.
+#   Gør intet ved 0 A, inaktiv session eller allerede åbent segment.
 # ============================================================
 
-# ------------------------------------------------------------
-# SCRIPT: EV REBASELINE SESSION FROM PLAN
-# Called by:
-#   Ingen kald fundet i automations.yaml
-#   Kan stadig kaldes manuelt eller fra dashboard
-# ------------------------------------------------------------
+ev_segment_open_from_ampere:
+  alias: EV - Segment open from ampere
+  mode: single
+
+  fields:
+    ampere:
+      description: "Confirmed Easee ampere"
+      example: 10
+
+  sequence:
+    - variables:
+        requested_ampere: "{{ ampere | int(0) }}"
+        min_amp: "{{ states('input_number.ev_min_charge_ampere') | int(7) }}"
+
+    - condition: template
+      value_template: >
+        {{
+          requested_ampere >= min_amp
+          and is_state('input_boolean.ev_session_active', 'on')
+          and is_state('input_boolean.ev_segment_open', 'off')
+        }}
+
+    - action: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.ev_segment_open
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_segment_ampere
+      data:
+        value: "{{ requested_ampere }}"
+
+    - action: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_segment_started_at
+      data:
+        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+    - action: input_number.set_value
+      target:
+        entity_id: input_number.ev_segment_start_energy_kwh
+      data:
+        value: >
+          {{
+            states('input_number.ev_session_energy_latched_kwh')
+            | float(0)
+            | round(3)
+          }}
+
+    - action: logbook.log
+      data:
+        name: EV Segment
+        message: >
+          Segment åbnet:
+          amp={{ requested_ampere }} A,
+          start_energy={{
+            states('input_number.ev_session_energy_latched_kwh')
+          }} kWh
+
+intellicharge_apply_smart:
+  alias: IntelliCharge → Smart
+  mode: single
+  sequence:
+    - if:
+        - condition: template
+          value_template: >
+            {{ is_state('sensor.ev_intellicharge_smart_status_2', 'Smart') }}
+      then:
+        - stop: "IntelliCharge er allerede Smart"
+
+    - service: rest_command.intellicharge_set_smart
+
+    - delay: "00:00:08"
+
+    - service: homeassistant.update_entity
+      target:
+        entity_id: sensor.ev_intellicharge_smart_status_2
+
+    - service: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.intellicharge_smart_enabled
+
+    - service: input_select.select_option
+      target:
+        entity_id: input_select.intellicharge_desired_mode
+      data:
+        option: "Smart"
+
+    - service: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_intellicharge_last_change
+      data:
+        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+
+intellicharge_apply_allow:
+  alias: IntelliCharge → Allow Always
+  mode: single
+  sequence:
+    - if:
+        - condition: template
+          value_template: >
+            {{ is_state('sensor.ev_intellicharge_smart_status_2', 'Allow Always') }}
+      then:
+        - stop: "IntelliCharge er allerede Allow Always"
+
+    - service: rest_command.intellicharge_set_allow_always
+
+    - delay: "00:00:08"
+
+    - service: homeassistant.update_entity
+      target:
+        entity_id: sensor.ev_intellicharge_smart_status_2
+
+    - service: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.intellicharge_smart_enabled
+
+    - service: input_select.select_option
+      target:
+        entity_id: input_select.intellicharge_desired_mode
+      data:
+        option: "Allow Always"
+
+    - service: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.ev_intellicharge_last_change
+      data:
+        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+ev_log_segment_csv:
+  alias: EV - Log segment CSV
+  mode: queued
+  fields:
+    line:
+      description: CSV line
+  sequence:
+    - action: logbook.log
+      data:
+        name: EV CSV Segment Writer
+        message: >
+          Skriver segment CSV:
+          {{ line }}
+
+    - action: shell_command.ev_append_segment_csv
+      data:
+        line: "{{ line }}"
+
+ev_log_session_csv:
+  alias: EV - Log session CSV
+  mode: queued
+  fields:
+    line:
+      description: CSV line
+  sequence:
+    - action: shell_command.ev_append_session_csv
+      data:
+        line: "{{ line }}"    
 
 ev_rebaseline_session_from_plan:
   alias: EV Rebaseline Session From Plan
@@ -451,371 +585,6 @@ ev_rebaseline_session_from_plan:
           battery={{ states('input_number.ev_guest_planned_battery_kwh') }},
           easee_start_energy={{ easee_energy }}
 
-# ------------------------------------------------------------
-# SCRIPT: EV SEGMENT OPEN
-# Formål:
-#   Åbner et energisegment når bilen faktisk lader.
-#
-# Segmentets energibaseline er altid HA's latchede
-# sessionenergi:
-#   input_number.ev_session_energy_latched_kwh
-#
-# Scriptet gør ingenting hvis:
-#   - sessionen ikke er aktiv
-#   - bilen ikke leverer reel ladeeffekt
-#   - segment allerede er åbent
-#   - ampere er ugyldig
-# ------------------------------------------------------------
-
-ev_segment_open:
-  alias: EV - Segment open
-  mode: single
-
-  fields:
-    ampere:
-      description: "Ampere for det nye segment. Hvis udeladt bruges effective target."
-      example: 10
-
-  sequence:
-    - variables:
-        min_amp: "{{ states('input_number.ev_min_charge_ampere') | int(7) }}"
-
-        requested_ampere: >
-          {% set passed = ampere | default(none) %}
-          {% if passed is not none
-             and passed not in ['', 'unknown', 'unavailable', 'none'] %}
-            {{ passed | int(0) }}
-          {% else %}
-            {{ states('sensor.ev_target_ampere_effective') | int(0) }}
-          {% endif %}
-
-        current_energy: >
-          {{
-            states('input_number.ev_session_energy_latched_kwh')
-            | float(0)
-            | round(3)
-          }}
-
-        now_text: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
-
-    - condition: template
-      value_template: >
-        {{
-          is_state('input_boolean.ev_session_active', 'on')
-          and is_state('input_boolean.ev_segment_open', 'off')
-          and states('sensor.eh45khwp_power') | float(0) > 0.5
-          and requested_ampere >= min_amp
-          and requested_ampere <= 16
-        }}
-
-    - action: input_number.set_value
-      target:
-        entity_id: input_number.ev_segment_ampere
-      data:
-        value: "{{ requested_ampere }}"
-
-    - action: input_datetime.set_datetime
-      target:
-        entity_id: input_datetime.ev_segment_started_at
-      data:
-        datetime: "{{ now_text }}"
-
-    - action: input_number.set_value
-      target:
-        entity_id: input_number.ev_segment_start_energy_kwh
-      data:
-        value: "{{ current_energy }}"
-
-    - action: input_boolean.turn_on
-      target:
-        entity_id: input_boolean.ev_segment_open
-
-    - action: logbook.log
-      data:
-        name: EV Segment
-        message: >
-          Segment åbnet:
-          amp={{ requested_ampere }} A,
-          start_energy={{ current_energy }} kWh,
-          power={{ states('sensor.eh45khwp_power') }} kW
-
-
-# ------------------------------------------------------------
-# SCRIPT: EV SEGMENT CLOSE
-# Formål:
-#   Lukker og logger det aktuelle energisegment.
-#
-# Segmentenergi:
-#   current session latched energy
-#   minus
-#   segment start latched energy
-#
-# Scriptet lukker segmenttilstanden før CSV-logning.
-# Dermed kan samme segment ikke logges to gange af to
-# forskellige triggere.
-# ------------------------------------------------------------
-
-ev_segment_close:
-  alias: EV - Segment close
-  mode: single
-
-  fields:
-    reason:
-      description: "Årsag til segmentlukning"
-      example: "ampere_change"
-
-  sequence:
-    - condition: state
-      entity_id: input_boolean.ev_segment_open
-      state: 'on'
-
-    - variables:
-        started_at: "{{ states('input_datetime.ev_segment_started_at') }}"
-        ended_at: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
-
-        start_energy: >
-          {{
-            states('input_number.ev_segment_start_energy_kwh')
-            | float(0)
-          }}
-
-        end_energy: >
-          {{
-            states('input_number.ev_session_energy_latched_kwh')
-            | float(0)
-          }}
-
-        segment_kwh: >
-          {{
-            [
-              (
-                states('input_number.ev_session_energy_latched_kwh') | float(0)
-                -
-                states('input_number.ev_segment_start_energy_kwh') | float(0)
-              ),
-              0
-            ]
-            | max
-            | round(3)
-          }}
-
-        segment_ampere: >
-          {{ states('input_number.ev_segment_ampere') | int(0) }}
-
-        mode: >
-          {{ states('input_text.ev_session_mode_latched') }}
-
-        close_reason: >
-          {{ reason | default('unknown') }}
-
-    # Claim segmentet først.
-    # Hvis en anden automation udløses umiddelbart bagefter,
-    # ser den segment_open = off og kan derfor ikke logge igen.
-    - action: input_boolean.turn_off
-      target:
-        entity_id: input_boolean.ev_segment_open
-
-    - if:
-        - condition: template
-          value_template: "{{ segment_kwh > 0.01 }}"
-      then:
-        - action: script.ev_log_segment_csv
-          data:
-            line: >-
-              {{ [
-                'segment_stop',
-                started_at,
-                ended_at,
-                mode,
-                segment_ampere,
-                segment_kwh,
-                end_energy | round(3),
-                states('input_number.ev_session_start_soc'),
-                states('input_number.ev_session_target_soc'),
-                states('input_number.ev_session_battery_kwh')
-              ] | join(',') }}
-
-        - action: input_text.set_value
-          target:
-            entity_id: input_text.ev_last_segment_summary
-          data:
-            value: >
-              {{ started_at }} → {{ ended_at }}
-              · mode={{ mode }}
-              · amp={{ segment_ampere }} A
-              · energy={{ segment_kwh }} kWh
-              · reason={{ close_reason }}
-
-    - action: input_number.set_value
-      target:
-        entity_id: input_number.ev_segment_start_energy_kwh
-      data:
-        value: "{{ end_energy | round(3) }}"
-
-    - action: input_number.set_value
-      target:
-        entity_id: input_number.ev_segment_ampere
-      data:
-        value: 0
-
-    - action: logbook.log
-      data:
-        name: EV Segment
-        message: >
-          Segment lukket:
-          reason={{ close_reason }},
-          amp={{ segment_ampere }} A,
-          energy={{ segment_kwh }} kWh,
-          session_energy={{ end_energy | round(3) }} kWh          
-
-# ============================================================
-# EV - CSV LOGGING
-# ============================================================
-
-# ------------------------------------------------------------
-# SCRIPT: EV LOG SEGMENT CSV
-# Called by:
-#   automation.ev_segment_close_on_ampere_change
-#   automation.ev_segment_close_on_charging_stop
-#   automation.ev_segment_close_on_manual_stop
-# ------------------------------------------------------------
-
-ev_log_segment_csv:
-  alias: EV - Log segment CSV
-  mode: queued
-  fields:
-    line:
-      description: CSV line
-  sequence:
-    - action: logbook.log
-      data:
-        name: EV CSV Segment Writer
-        message: >
-          Skriver segment CSV:
-          {{ line }}
-
-    - action: shell_command.ev_append_segment_csv
-      data:
-        line: "{{ line }}"
-
-# ------------------------------------------------------------
-# SCRIPT: EV LOG SESSION CSV
-# Called by:
-#   automation.ev_session_finish_on_logical_stop
-# ------------------------------------------------------------
-
-ev_log_session_csv:
-  alias: EV - Log session CSV
-  mode: queued
-  fields:
-    line:
-      description: CSV line
-  sequence:
-    - action: shell_command.ev_append_session_csv
-      data:
-        line: "{{ line }}"
-
-# ============================================================
-# INTELLICHARGE
-# ============================================================
-
-# ------------------------------------------------------------
-# SCRIPT: INTELLICHARGE APPLY SMART
-# Called by:
-#   automation.intellicharge_release_ev_override
-#   automation.intellicharge_recover_after_restart
-#   automation.ev_ha_control_disabled_failsafe
-# ------------------------------------------------------------
-
-intellicharge_apply_smart:
-  alias: IntelliCharge → Smart
-  mode: single
-  sequence:
-    - if:
-        - condition: template
-          value_template: >
-            {{ is_state('sensor.ev_intellicharge_smart_status_2', 'Smart') }}
-      then:
-        - stop: "IntelliCharge er allerede Smart"
-
-    - service: rest_command.intellicharge_set_smart
-
-    - delay: "00:00:08"
-
-    - service: homeassistant.update_entity
-      target:
-        entity_id: sensor.ev_intellicharge_smart_status_2
-
-    - service: input_boolean.turn_on
-      target:
-        entity_id: input_boolean.intellicharge_smart_enabled
-
-    - service: input_select.select_option
-      target:
-        entity_id: input_select.intellicharge_desired_mode
-      data:
-        option: "Smart"
-
-    - service: input_datetime.set_datetime
-      target:
-        entity_id: input_datetime.ev_intellicharge_last_change
-      data:
-        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
-
-# ------------------------------------------------------------
-# SCRIPT: INTELLICHARGE APPLY ALLOW
-# Called by:
-#   automation.intellicharge_acquire_ev_override
-#   automation.intellicharge_release_ev_override
-#   automation.intellicharge_recover_after_restart
-# ------------------------------------------------------------
-
-intellicharge_apply_allow:
-  alias: IntelliCharge → Allow Always
-  mode: single
-  sequence:
-    - if:
-        - condition: template
-          value_template: >
-            {{ is_state('sensor.ev_intellicharge_smart_status_2', 'Allow Always') }}
-      then:
-        - stop: "IntelliCharge er allerede Allow Always"
-
-    - service: rest_command.intellicharge_set_allow_always
-
-    - delay: "00:00:08"
-
-    - service: homeassistant.update_entity
-      target:
-        entity_id: sensor.ev_intellicharge_smart_status_2
-
-    - service: input_boolean.turn_off
-      target:
-        entity_id: input_boolean.intellicharge_smart_enabled
-
-    - service: input_select.select_option
-      target:
-        entity_id: input_select.intellicharge_desired_mode
-      data:
-        option: "Allow Always"
-
-    - service: input_datetime.set_datetime
-      target:
-        entity_id: input_datetime.ev_intellicharge_last_change
-      data:
-        datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
-
-# ============================================================
-# NOTIFICATIONS
-# ============================================================
-
-# ------------------------------------------------------------
-# SCRIPT: SPEAK TO LARS
-# Called by:
-#   Ingen kald fundet i automations.yaml
-#   Kan kaldes manuelt eller andetsteds
-# ------------------------------------------------------------
-
 speak_to_lars:
   alias: Speak to Lars
   mode: restart
@@ -828,14 +597,7 @@ speak_to_lars:
         message: TTS
         data:
           tts_text: "{{ text }}"
-
-# ------------------------------------------------------------
-# SCRIPT: WAKE AND SPEAK
-# Called by:
-#   Ingen kald fundet i automations.yaml
-#   Kan kaldes manuelt eller andetsteds
-# ------------------------------------------------------------
-
+  
 wake_and_speak:
   alias: Wake And Speak
   mode: restart
@@ -863,16 +625,6 @@ wake_and_speak:
         data:
           tts_text: "{{ text }}"
 
-# ============================================================
-# KITCHEN
-# ============================================================
-
-# ------------------------------------------------------------
-# SCRIPT: KOKKEN TAEND ALT
-# Called by:
-#   automation.kokken_presence_light_on
-# ------------------------------------------------------------
-
 kokken_taend_alt:
   alias: Køkken - Tænd alt lys
   sequence:
@@ -891,12 +643,6 @@ kokken_taend_alt:
 
   mode: single
 
-# ------------------------------------------------------------
-# SCRIPT: KOKKEN SLUK ALT
-# Called by:
-#   automation.kokken_presence_light_off
-# ------------------------------------------------------------
-
 kokken_sluk_alt:
   alias: Køkken - Sluk alt lys
   sequence:
@@ -913,4 +659,4 @@ kokken_sluk_alt:
           - switch.t34_minitong_duan_qi_2_switch_1
           - switch.t34_minitong_duan_qi_3_switch_1
 
-  mode: single
+  mode: single  

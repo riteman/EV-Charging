@@ -11,5 +11,11 @@
     "docker-compose.*.yaml": "yaml",
     "esphome/**/*.yml": "esphome",
     "esphome/**/*.yaml": "esphome"
-  }
+  },
+
+ "search.exclude": {
+  "**/Kopier før oprydning*/**": true,
+  "**/*før reorg*.yaml": true,
+  "**/*before reorg*.yaml": true
+}
 }
