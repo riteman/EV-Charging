@@ -34,6 +34,15 @@ input_select:
       - Sun Optimized
     initial: Auto
 
+  ev_car_soc_source:
+    name: EV Car SOC Source
+    options:
+      - Unknown
+      - VW
+      - Manual
+    initial: Unknown
+    icon: mdi:car-battery  
+
   ev_guest_target_quick:
     name: Guest Target Quick
     options:
@@ -130,6 +139,22 @@ input_datetime:
     has_time: true      
 
 input_number:
+
+  ev_car_soc:
+    name: EV Car SOC
+    min: 0
+    max: 100
+    step: 0.1
+    unit_of_measurement: "%"
+    mode: box
+
+  ev_soc_correction:
+    name: EV SOC correction
+    min: -20
+    max: 20
+    step: 0.1
+    unit_of_measurement: "%"
+    mode: box
   ev_guest_planned_start_soc:
     name: Guest Planned Start SOC
     min: 0
@@ -448,8 +473,6 @@ template:
           battery_kwh: "{{ states('input_number.ev_session_battery_kwh') | float(77) }}"
           effective_soc: "{{ states('sensor.ev_effective_soc') }}"
           effective_target_soc: "{{ states('sensor.ev_effective_target_soc') }}"
-          vw_soc: "{{ states('sensor.battery_level') }}"
-          vw_target_soc: "{{ states('sensor.battery_target_charge_level') }}"
           source: "effective_soc_minus_effective_target"
 
       - name: "EV Remaining Hours Needed"
@@ -503,21 +526,28 @@ template:
         unit_of_measurement: "kWh"
         device_class: energy
         state: >
-          {% set target_soc = states('input_number.ev_session_target_soc') | float(states('input_number.ev_guest_planned_target_soc') | float(80)) %}
-          {% set soc = states('sensor.ev_calculated_soc') | float(0) %}
-          {% set battery_kwh = states('input_number.ev_session_battery_kwh') | float(states('input_number.ev_guest_planned_battery_kwh') | float(77)) %}
+          {# MODEL B - bruger de abstrakte effektive SOC-værdier #}
+
+          {% set target_soc = states('sensor.ev_effective_target_soc') | float(80) %}
+          {% set soc = states('sensor.ev_effective_soc') | float(0) %}
+          {% set battery_kwh = states('input_number.ev_session_battery_kwh')
+             | float(states('input_number.ev_guest_planned_battery_kwh') | float(77)) %}
           {% set charge_efficiency = 0.90 %}
 
-          {% set battery_kwh_missing = battery_kwh * ([target_soc - soc, 0] | max) / 100 %}
+          {% set battery_kwh_missing =
+             battery_kwh * ([target_soc - soc, 0] | max) / 100 %}
+
           {{ (battery_kwh_missing / charge_efficiency) | round(2) }}
 
         attributes:
           mode: "{{ states('input_select.ev_charge_mode') }}"
-          calculated_soc: "{{ states('sensor.ev_calculated_soc') }}"
-          target_soc: "{{ states('input_number.ev_session_target_soc') }}"
-          battery_kwh: "{{ states('input_number.ev_session_battery_kwh') }}"
+          effective_soc: "{{ states('sensor.ev_effective_soc') }}"
+          effective_target_soc: "{{ states('sensor.ev_effective_target_soc') }}"
+          battery_kwh: >
+            {{ states('input_number.ev_session_battery_kwh')
+               | float(states('input_number.ev_guest_planned_battery_kwh') | float(77)) }}
           charge_efficiency: 0.90
-          source: "target_minus_calculated_soc_with_efficiency"
+          source: "effective_target_minus_effective_soc_with_efficiency"
 
       - name: "EV Night Reference Price Real"
         unique_id: ev_night_reference_price_real
@@ -919,37 +949,6 @@ template:
         state: >
           {% set grid_w = states('sensor.shelly_grid_power_raw') | float(0) %}
           {{ (grid_w / 1000) | round(2) }} 
-
-      - name: "EV Charge Power Mode"
-        unique_id: ev_charge_power_mode
-        state: >
-          {% set amp = states('sensor.ev_target_ampere_effective') | int(0) %}
-          {% set decision = states('sensor.ev_charge_decision') %}
-          {% set enabled = is_state('input_boolean.ev_ha_control_enabled', 'on') %}
-          {% set session = is_state('input_boolean.ev_session_active', 'on') %}
-          {% set cable = is_state('binary_sensor.ev_cable_connected_effective', 'on') %}
-          {% set complete = is_state('binary_sensor.ev_session_complete', 'on') %}
-          {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
-
-          {% if not enabled or not cable or not session or complete or decision != 'LAD' %}
-            STOP
-          {% elif amp >= 16 %}
-            FULL
-          {% elif amp >= min_amp %}
-            REDUCED
-          {% else %}
-            STOP
-          {% endif %}
-        attributes:
-          source: >
-            derived_from_decision_and_ampere
-          decision: >
-            {{ states('sensor.ev_charge_decision') }}
-          target_ampere: >
-            {{ states('sensor.ev_target_ampere_effective') | int(0) }}
-          comment: >
-            Legacy compatibility sensor only. Do not use for control logic.
-
       - name: "EV Remaining Minutes Needed"
         unique_id: ev_remaining_minutes_needed
         unit_of_measurement: "min"
@@ -1819,13 +1818,15 @@ template:
       - name: "EV Operational Status"
         unique_id: ev_operational_status
         state: >
-          {# MODEL B - status bruger effektive SOC-sensorer; VW/kabel er kun debug #}
+          {# MODEL B - samlet brugerstatus #}
           {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
           {% set mode = states('input_select.ev_charge_mode') %}
+          {% set enabled = is_state('input_boolean.ev_ha_control_enabled', 'on') %}
+          {% set session = is_state('input_boolean.ev_session_active', 'on') %}
+          {% set cable = is_state('binary_sensor.ev_cable_connected_effective', 'on') %}
           {% set ready = is_state('binary_sensor.ev_ready_to_charge', 'on') %}
           {% set decision = states('sensor.ev_charge_decision') %}
           {% set next_slot = states('sensor.ev_next_charge_window_real') %}
-          {% set easee_status = states('sensor.eh45khwp_status') %}
           {% set power_kw = states('sensor.eh45khwp_power') | float(0) %}
           {% set charging = power_kw > 0.5 %}
           {% set start_delay = is_state('input_boolean.ev_start_delay_active', 'on') %}
@@ -1842,7 +1843,9 @@ template:
           {% set slot_active = state_attr('sensor.ev_next_charge_window_real', 'active') in [true, 'true', 'True'] %}
           {% set slot_future = state_attr('sensor.ev_next_charge_window_real', 'future') in [true, 'true', 'True'] %}
 
-          {% if mode == 'Stop' %}
+          {% if not enabled %}
+            HA-styring slået fra
+          {% elif mode == 'Stop' %}
             Stop valgt
           {% elif mode in ['Auto', 'Charge Now', 'Sun Optimized'] and target_reached %}
             Færdig
@@ -1850,7 +1853,7 @@ template:
             Færdig
           {% elif charging %}
             Lader nu
-          {% elif decision == 'LAD' and easee_status in ['Bilen er koblet fra', 'Car disconnected', 'Disconnected'] %}
+          {% elif not cable %}
             Klar – tilslut bil
           {% elif not ready %}
             Mangler – tryk for detaljer
@@ -1858,22 +1861,27 @@ template:
             Starter snart
           {% elif decision == 'LAD' and effective < min_amp %}
             Blokeret – Amp for lav
-          {% elif decision == 'LAD' and charger_on and no_current_reason == 'pending_authorization' %}
+          {% elif decision == 'LAD'
+                and charger_on
+                and no_current_reason == 'pending_authorization' %}
             Blokeret – afventer godkendelse
           {% elif decision == 'LAD' and missing != 'OK' %}
             Blokeret – krav ikke opfyldt
           {% elif decision == 'LAD' and charger_on and not charging %}
             Blokeret – ingen ladeeffekt
-          {% elif decision == 'LAD' and raw >= min_amp and stable >= min_amp and effective >= min_amp %}
+          {% elif decision == 'LAD'
+                and raw >= min_amp
+                and stable >= min_amp
+                and effective >= min_amp %}
             Klar til opladning
           {% elif mode == 'Sun Optimized' and decision == 'VENT' %}
-            Klar - venter på sol
+            Klar – venter på sol
           {% elif mode == 'Auto' and slot_future %}
-            Klar - venter på slot {{ next_slot }}
+            Klar – venter på slot {{ next_slot }}
           {% elif mode == 'Auto' and decision == 'VENT' %}
-            Klar - venter på billigere slot
+            Klar – venter på billigere slot
           {% elif slot_future %}
-            Klar - venter på slot {{ next_slot }}
+            Klar – venter på slot {{ next_slot }}
           {% elif slot_active %}
             Klar
           {% else %}
@@ -1884,11 +1892,17 @@ template:
           model: "MODEL B"
 
           problem: >
+            {% set enabled = is_state('input_boolean.ev_ha_control_enabled', 'on') %}
+            {% set mode = states('input_select.ev_charge_mode') %}
+            {% set cable = is_state('binary_sensor.ev_cable_connected_effective', 'on') %}
             {% set m = states('sensor.ev_missing_requirements') %}
-            {% set decision = states('sensor.ev_charge_decision') %}
-            {% set easee_status = states('sensor.eh45khwp_status') %}
-            {% if decision == 'LAD' and easee_status in ['Bilen er koblet fra', 'Car disconnected', 'Disconnected'] %}
-              Ingen problemer – tilslut bilen
+
+            {% if not enabled %}
+              Ingen fejl – HA-styring er slået fra
+            {% elif mode == 'Stop' %}
+              Ingen fejl – Stop er valgt
+            {% elif not cable %}
+              Ingen fejl – bilen er ikke tilsluttet
             {% elif m == 'OK' %}
               Ingen problemer – systemet er klar
             {% else %}
@@ -1896,10 +1910,13 @@ template:
             {% endif %}
 
           explanation: >
-            {# MODEL B - forklaring bruger effektive SOC-sensorer; VW/kabel er kun debug #}
+            {# MODEL B - menneskeligt læsbar forklaring #}
+            {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
             {% set mode = states('input_select.ev_charge_mode') %}
+            {% set enabled = is_state('input_boolean.ev_ha_control_enabled', 'on') %}
+            {% set cable = is_state('binary_sensor.ev_cable_connected_effective', 'on') %}
+            {% set ready = is_state('binary_sensor.ev_ready_to_charge', 'on') %}
             {% set decision = states('sensor.ev_charge_decision') %}
-            {% set easee_status = states('sensor.eh45khwp_status') %}
             {% set power_kw = states('sensor.eh45khwp_power') | float(0) %}
             {% set charging = power_kw > 0.5 %}
             {% set start_delay = is_state('input_boolean.ev_start_delay_active', 'on') %}
@@ -1912,44 +1929,56 @@ template:
             {% set soc = states('sensor.ev_effective_soc') | float(0) %}
             {% set target = states('sensor.ev_effective_target_soc') | float(0) %}
             {% set target_reached = target > 0 and soc >= (target - 0.5) %}
-            {% set min_amp = states('input_number.ev_min_charge_ampere') | int(7) %}
+            {% set session_complete = is_state('binary_sensor.ev_session_complete', 'on') %}
 
-            {% if target_reached and mode in ['Auto', 'Charge Now', 'Sun Optimized'] %}
+            {% if not enabled %}
+              HA-styring er slået fra. Systemet styrer derfor ikke opladningen.
+            {% elif mode == 'Stop' %}
+              Stop er valgt. HA starter derfor ikke opladning.
+            {% elif mode in ['Auto', 'Charge Now', 'Sun Optimized'] and target_reached %}
               Bilen har nået target SOC.
+            {% elif mode == 'Monta Guest' and session_complete %}
+              Gæstesessionen er færdig.
             {% elif charging %}
               Bilen lader fysisk lige nu.
-            {% elif decision == 'LAD' and easee_status in ['Bilen er koblet fra', 'Car disconnected', 'Disconnected'] %}
-              Systemet er klar til opladning, men bilen er ikke tilsluttet laderen.
+            {% elif not cable %}
+              HA er klar, men bilen er ikke tilsluttet laderen.
+            {% elif not ready %}
+              Systemet er ikke klar til opladning: {{ m }}.
             {% elif start_delay %}
               Systemet har besluttet at lade og afventer start-delay.
             {% elif decision == 'LAD' and effective < min_amp %}
-              Systemet vil gerne lade, men den effektive ampere er under minimum {{ min_amp }}A.
-            {% elif decision == 'LAD' and charger_on and no_current_reason == 'pending_authorization' %}
+              Systemet vil gerne lade, men den effektive ampere er under minimum {{ min_amp }} A.
+            {% elif decision == 'LAD'
+                  and charger_on
+                  and no_current_reason == 'pending_authorization' %}
               Laderen er klar, men afventer godkendelse.
             {% elif decision == 'LAD' and m != 'OK' %}
-              Systemet vil gerne lade, men mindst ét krav er ikke opfyldt: {{ m }}
+              Systemet vil gerne lade, men mindst ét krav er ikke opfyldt: {{ m }}.
             {% elif decision == 'LAD' and charger_on and not charging %}
               Laderen er aktiveret, men der måles ingen reel ladeeffekt.
-            {% elif decision == 'LAD' and raw >= min_amp and stable >= min_amp and effective >= min_amp %}
+            {% elif decision == 'LAD'
+                  and raw >= min_amp
+                  and stable >= min_amp
+                  and effective >= min_amp %}
               Systemet vil gerne lade og har gyldig ampere, men afventer startflowet.
             {% elif mode == 'Sun Optimized' and decision == 'VENT' %}
-              Systemet er i Sun Optimized og venter på tilstrækkelig sol til minimum {{ min_amp }}A.
+              Systemet er i Sun Optimized og venter på tilstrækkelig sol til minimum {{ min_amp }} A.
             {% elif mode == 'Auto' and decision == 'VENT' %}
-              Systemet er i Auto og afventer næste valgte/billigere ladevindue.
+              Systemet er i Auto og afventer næste valgte eller billigere ladevindue.
             {% else %}
               Systemet afventer planlagte slots eller bedre betingelser.
             {% endif %}
 
           effective_soc: "{{ states('sensor.ev_effective_soc') }}"
           effective_target_soc: "{{ states('sensor.ev_effective_target_soc') }}"
-
-          vw_soc: "{{ states('sensor.battery_level') }}"
-          vw_target_soc: "{{ states('sensor.battery_target_charge_level') }}"
-
+          cable_connected: "{{ states('binary_sensor.ev_cable_connected_effective') }}"
           easee_status: "{{ states('sensor.eh45khwp_status') }}"
           next_slot: "{{ states('sensor.ev_next_charge_window_real') }}"
           decision: "{{ states('sensor.ev_charge_decision') }}"
           mode: "{{ states('input_select.ev_charge_mode') }}"
+          ha_control_enabled: "{{ states('input_boolean.ev_ha_control_enabled') }}"
+          session_active: "{{ states('input_boolean.ev_session_active') }}"
           ready_to_charge: "{{ states('binary_sensor.ev_ready_to_charge') }}"
           remaining_kwh: "{{ states('sensor.ev_remaining_energy_live_kwh') }}"
           session_target_soc: "{{ states('input_number.ev_session_target_soc') }}"
@@ -2099,34 +2128,25 @@ template:
         state: "{{ states('sensor.ev_effective_target_soc') }}"
         unit_of_measurement: "%"
         attributes:
-          # MODEL B - viser effektiv target SOC; VW er kun debug
+          # MODEL B - viser effektiv target SOC og den interne kilde
           data_source: >
-            {% set vw_target = states('sensor.battery_target_charge_level') %}
             {% set effective_target = states('sensor.ev_effective_target_soc') %}
             {% set guest_target = states('input_number.ev_guest_planned_target_soc') %}
             {% set session_target = states('input_number.ev_session_target_soc') %}
 
-            {% if vw_target not in ['unknown', 'unavailable', '', 'none']
-               and (vw_target | float(0)) == (effective_target | float(-1)) %}
-              VW online
+            {% if is_state('input_boolean.ev_session_active', 'on')
+               and session_target not in ['unknown', 'unavailable', '', 'none']
+               and (session_target | float(0)) == (effective_target | float(-1)) %}
+              Session target
             {% elif guest_target not in ['unknown', 'unavailable', '', 'none']
                  and (guest_target | float(0)) == (effective_target | float(-1)) %}
-              Indtastet / fallback
-            {% elif session_target not in ['unknown', 'unavailable', '', 'none']
-                 and (session_target | float(0)) == (effective_target | float(-1)) %}
-              Session fallback
+              Planlagt target
             {% else %}
-              Effektiv SOC-kilde
+              Effektiv target
             {% endif %}
 
           effective_target_soc: "{{ states('sensor.ev_effective_target_soc') }}"
           effective_soc: "{{ states('sensor.ev_effective_soc') }}"
-
-          # VW debug
-          vw_soc: "{{ states('sensor.battery_level') }}"
-          vw_target_soc: "{{ states('sensor.battery_target_charge_level') }}"
-
-          # Fallback/debug
           planned_start_soc: "{{ states('input_number.ev_guest_planned_start_soc') }}"
           planned_target_soc: "{{ states('input_number.ev_guest_planned_target_soc') }}"
           session_target_soc: "{{ states('input_number.ev_session_target_soc') }}"
@@ -2145,7 +2165,7 @@ template:
       - name: "EV Missing Requirements"
         unique_id: ev_missing_requirements
         state: >
-          {# MODEL B - krav baseres på HA-session og live restenergi; VW/kabel er debug #}
+          {# MODEL B - krav baseres på HA-session og live restenergi #}
           {% set mode = states('input_select.ev_charge_mode') %}
           {% set ha = is_state('input_boolean.ev_ha_control_enabled', 'on') %}
           {% set session = is_state('input_boolean.ev_session_active', 'on') %}
@@ -2189,30 +2209,27 @@ template:
           effective_target_soc: "{{ states('sensor.ev_effective_target_soc') }}"
           decision: "{{ states('sensor.ev_charge_decision') }}"
           target_ampere: "{{ states('sensor.ev_target_ampere_effective') }}"
-
-          # Debug only
           cable_connected_effective: "{{ states('binary_sensor.ev_cable_connected_effective') }}"
-          vw_cable_connected: "{{ states('binary_sensor.charging_cable_connected') }}"
-          vw_soc: "{{ states('sensor.battery_level') }}"
-          vw_target_soc: "{{ states('sensor.battery_target_charge_level') }}" 
 
       - name: "EV Calculated SOC"
         unique_id: ev_calculated_soc
         unit_of_measurement: "%"
         state: >
-          {# MODEL B - beregner SOC ud fra session start-SOC og HA-latchet energi kun under aktiv session #}
+          {# MODEL B - session start-SOC + HA-latchet energi + korrektion fra nye bildata #}
 
           {% set session_active = is_state('input_boolean.ev_session_active', 'on') %}
           {% set session_start_soc = states('input_number.ev_session_start_soc') | float(0) %}
           {% set planned_start_soc = states('input_number.ev_guest_planned_start_soc') | float(0) %}
           {% set battery_kwh = states('input_number.ev_session_battery_kwh') | float(77) %}
           {% set delivered_kwh = states('input_number.ev_session_energy_latched_kwh') | float(0) %}
+          {% set correction = states('input_number.ev_soc_correction') | float(0) %}
 
           {% if session_active and battery_kwh > 0 %}
-            {% set charge_efficiency = 0.90 %}
-            {{ [session_start_soc + (delivered_kwh * charge_efficiency / battery_kwh * 100), 100] | min | round(1) }}
+            {% set charge_efficiency = 0.87 %}
+            {% set energy_soc = delivered_kwh * charge_efficiency / battery_kwh * 100 %}
+            {{ [session_start_soc + energy_soc + correction, 100] | min | round(1) }}
           {% elif session_active %}
-            {{ session_start_soc | round(1) }}
+            {{ [session_start_soc + correction, 100] | min | round(1) }}
           {% else %}
             {{ planned_start_soc | round(1) }}
           {% endif %}
@@ -2221,7 +2238,7 @@ template:
           model: "MODEL B"
           source: >
             {% if is_state('input_boolean.ev_session_active', 'on') %}
-              session_start_soc_plus_latched_energy
+              session_start_soc_plus_latched_energy_plus_car_correction
             {% else %}
               guest_start_soc_only_session_inactive
             {% endif %}
@@ -2230,31 +2247,45 @@ template:
           planned_start_soc: "{{ states('input_number.ev_guest_planned_start_soc') }}"
           battery_kwh: "{{ states('input_number.ev_session_battery_kwh') }}"
           delivered_latched_kwh: "{{ states('input_number.ev_session_energy_latched_kwh') }}"
-          vw_soc_debug: "{{ states('sensor.battery_level') }}"
+          soc_correction: "{{ states('input_number.ev_soc_correction') }}"
+          charge_efficiency: 0.87
 
       - name: "EV Effective SOC"
         unique_id: ev_effective_soc
         unit_of_measurement: "%"
         state: >
-          {# MODEL B - beregner SOC ud fra session start-SOC og HA-latchet leveret energi #}
+          {# MODEL B
+             Aktiv session: HA's beregnede SOC er autoritativ.
+             Ingen session: seneste accepterede SOC fra egen bil bruges,
+             ellers faldes tilbage til planlagt start-SOC.
+          #}
 
+          {% set session_active = is_state('input_boolean.ev_session_active', 'on') %}
           {% set calculated_soc = states('sensor.ev_calculated_soc') %}
-          {% set guest_soc = states('input_number.ev_guest_planned_start_soc') %}
+          {% set car_soc = states('input_number.ev_car_soc') | float(0) %}
+          {% set planned_soc = states('input_number.ev_guest_planned_start_soc') %}
           {% set session_soc = states('input_number.ev_session_start_soc') %}
 
-          {% if calculated_soc not in ['unknown', 'unavailable', '', 'none'] %}
+          {% if session_active and calculated_soc not in ['unknown', 'unavailable', '', 'none'] %}
             {{ calculated_soc | float(0) }}
-          {% elif guest_soc not in ['unknown', 'unavailable', '', 'none'] %}
-            {{ guest_soc | float(0) }}
+          {% elif not session_active and car_soc > 0 %}
+            {{ car_soc }}
+          {% elif planned_soc not in ['unknown', 'unavailable', '', 'none'] %}
+            {{ planned_soc | float(0) }}
           {% else %}
             {{ session_soc | float(0) }}
           {% endif %}
 
         attributes:
           source: >
+            {% set session_active = is_state('input_boolean.ev_session_active', 'on') %}
             {% set calculated_soc = states('sensor.ev_calculated_soc') %}
-            {% if calculated_soc not in ['unknown', 'unavailable', '', 'none'] %}
+            {% set car_soc = states('input_number.ev_car_soc') | float(0) %}
+
+            {% if session_active and calculated_soc not in ['unknown', 'unavailable', '', 'none'] %}
               calculated_soc
+            {% elif not session_active and car_soc > 0 %}
+              car_soc
             {% elif states('input_number.ev_guest_planned_start_soc') not in ['unknown', 'unavailable', '', 'none'] %}
               planned_soc
             {% else %}
@@ -2262,17 +2293,15 @@ template:
             {% endif %}
 
           calculated_soc: "{{ states('sensor.ev_calculated_soc') }}"
+          car_soc: "{{ states('input_number.ev_car_soc') }}"
           planned_start_soc: "{{ states('input_number.ev_guest_planned_start_soc') }}"
           session_start_soc: "{{ states('input_number.ev_session_start_soc') }}"
-
-          # VW debug
-          vw_soc: "{{ states('sensor.battery_level') }}"
 
       - name: "EV Effective Target SOC"
         unique_id: ev_effective_target_soc
         unit_of_measurement: "%"
         state: >
-          {# MODEL B - target SOC styres af HA, VW er kun debug #}
+          {# MODEL B - target SOC styres af HA #}
 
           {% set session_target = states('input_number.ev_session_target_soc') %}
           {% set guest_target = states('input_number.ev_guest_planned_target_soc') %}
@@ -2287,8 +2316,7 @@ template:
           model: "MODEL B"
           session_target_soc: "{{ states('input_number.ev_session_target_soc') }}"
           guest_target_soc: "{{ states('input_number.ev_guest_planned_target_soc') }}"
-          vw_target_soc: "{{ states('sensor.battery_target_charge_level') }}"
-          source: "ha_target_soc"  
+          source: "ha_target_soc"
 
       - name: Huawei Battery Power Signed
         unique_id: huawei_battery_power_signed
@@ -2452,9 +2480,8 @@ template:
       - name: "EV Cable Connected Effective"
         unique_id: ev_cable_connected_effective
         state: >
-          {# MODEL B - biluafhængig kabeldetektion #}
+          {# MODEL B - biluafhængig kabeldetektion via Easee eller simulation #}
 
-          {% set vw_cable = is_state('binary_sensor.charging_cable_connected', 'on') %}
           {% set simulation = is_state('input_boolean.ev_simulation_mode', 'on') %}
 
           {% set easee_status = states('sensor.eh45khwp_status') | lower %}
@@ -2463,21 +2490,19 @@ template:
             'charging',
             'completed',
             'ready_to_charge',
-            'waiting_for_authorization',
+            'awaiting_authorization',
             'charger_limited',
             'car_connected',
             'connected'
           ] %}
 
           {{
-            vw_cable
-            or simulation
+            simulation
             or easee_status in easee_cable_states
           }}
 
         attributes:
           model: "MODEL B"
-          vw_cable_connected: "{{ states('binary_sensor.charging_cable_connected') }}"
           easee_status: "{{ states('sensor.eh45khwp_status') }}"
           simulation_mode: "{{ states('input_boolean.ev_simulation_mode') }}"
           
@@ -2575,7 +2600,7 @@ template:
         unique_id: ev_ampere_update_allowed
         state: >
           {% set mode = states('input_select.ev_charge_mode') %}
-          {% set cable = is_state('binary_sensor.charging_cable_connected', 'on') %}
+          {% set cable = is_state('binary_sensor.ev_cable_connected_effective', 'on') %}
           {% set session = is_state('input_boolean.ev_session_active', 'on') %}
           {% set ha = is_state('input_boolean.ev_ha_control_enabled', 'on') %}
           {% set target = states('sensor.ev_target_ampere_effective') | int(0) %}
@@ -2586,13 +2611,11 @@ template:
             and cable
             and mode in ['Auto', 'Charge Now', 'Monta Guest']
             and target > 0
-          }}  
-
-                
+          }}
       - name: "EV Ready To Charge"
         unique_id: ev_ready_to_charge
         state: >
-          {# MODEL B - klarhed baseres på HA-session, ready-by og live restenergi; VW/kabel er ikke hard requirement #}
+          {# MODEL B - klarhed baseres på HA-session, ready-by og live restenergi #}
 
           {% set mode = states('input_select.ev_charge_mode') %}
           {% set ha = is_state('input_boolean.ev_ha_control_enabled', 'on') %}
@@ -2625,12 +2648,7 @@ template:
           remaining_kwh: "{{ states('sensor.ev_remaining_energy_live_kwh') }}"
           effective_soc: "{{ states('sensor.ev_effective_soc') }}"
           effective_target_soc: "{{ states('sensor.ev_effective_target_soc') }}"
-
-          # Debug only
           cable_connected_effective: "{{ states('binary_sensor.ev_cable_connected_effective') }}"
-          vw_cable_connected: "{{ states('binary_sensor.charging_cable_connected') }}"
-          vw_soc: "{{ states('sensor.battery_level') }}"
-          vw_target_soc: "{{ states('sensor.battery_target_charge_level') }}"
 
     
       - name: "EV Sun Optimized Export Gate"

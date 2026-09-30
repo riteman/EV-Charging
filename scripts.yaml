@@ -375,36 +375,57 @@ ev_set_target_ampere:
 
 # ------------------------------------------------------------
 # SCRIPT: EV REBASELINE SESSION FROM PLAN
+# Monta Guest only
 # Called by:
-#   Ingen kald fundet i automations.yaml
-#   Kan stadig kaldes manuelt eller fra dashboard
+#   Dashboard - Opdater aktiv session fra plan
 # ------------------------------------------------------------
-
 ev_rebaseline_session_from_plan:
   alias: EV Rebaseline Session From Plan
   mode: single
+
   sequence:
+    - condition: state
+      entity_id: input_select.ev_charge_mode
+      state: 'Monta Guest'
+
+    - condition: state
+      entity_id: input_boolean.ev_session_active
+      state: 'on'
+
     - variables:
-        now_text: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
-        easee_energy: "{{ states('sensor.eh45khwp_session_energy') | float(0) }}"
+        start_soc: >
+          {{ states('input_number.ev_guest_planned_start_soc') | float(0) }}
+        target_soc: >
+          {{ states('input_number.ev_guest_planned_target_soc') | float(80) }}
+        battery_kwh: >
+          {{ states('input_number.ev_guest_planned_battery_kwh') | float(77) }}
+        easee_energy: >
+          {{ states('sensor.eh45khwp_session_energy') | float(0) }}
+
+    - condition: template
+      value_template: >
+        {{ start_soc >= 0
+           and start_soc < target_soc
+           and target_soc <= 100
+           and battery_kwh > 0 }}
 
     - action: input_number.set_value
       target:
         entity_id: input_number.ev_session_start_soc
       data:
-        value: "{{ states('input_number.ev_guest_planned_start_soc') | float(0) }}"
+        value: "{{ start_soc }}"
 
     - action: input_number.set_value
       target:
         entity_id: input_number.ev_session_target_soc
       data:
-        value: "{{ states('input_number.ev_guest_planned_target_soc') | float(80) }}"
+        value: "{{ target_soc }}"
 
     - action: input_number.set_value
       target:
         entity_id: input_number.ev_session_battery_kwh
       data:
-        value: "{{ states('input_number.ev_guest_planned_battery_kwh') | float(77) }}"
+        value: "{{ battery_kwh }}"
 
     - action: input_number.set_value
       target:
@@ -420,36 +441,19 @@ ev_rebaseline_session_from_plan:
 
     - action: input_number.set_value
       target:
-        entity_id: input_number.ev_segment_start_energy_kwh
+        entity_id: input_number.ev_soc_correction
       data:
-        value: "{{ easee_energy }}"
-
-    - action: input_datetime.set_datetime
-      target:
-        entity_id: input_datetime.ev_segment_started_at
-      data:
-        datetime: "{{ now_text }}"
-
-    - action: input_boolean.turn_off
-      target:
-        entity_id:
-          - input_boolean.ev_session_logged
-
-    - action: input_boolean.turn_on
-      target:
-        entity_id:
-          - input_boolean.ev_session_active
-          - input_boolean.ev_segment_open
+        value: 0
 
     - action: logbook.log
       data:
         name: EV
         message: >
-          Session rebaselinet fra plan
-          start_soc={{ states('input_number.ev_guest_planned_start_soc') }},
-          target_soc={{ states('input_number.ev_guest_planned_target_soc') }},
-          battery={{ states('input_number.ev_guest_planned_battery_kwh') }},
-          easee_start_energy={{ easee_energy }}
+          Monta Guest session rebaselinet fra plan
+          (start_soc={{ start_soc }},
+          target_soc={{ target_soc }},
+          battery={{ battery_kwh }} kWh,
+          easee_start_energy={{ easee_energy }} kWh)
 
 # ------------------------------------------------------------
 # SCRIPT: EV SEGMENT OPEN

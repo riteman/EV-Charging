@@ -1,30 +1,22 @@
 views:
-  - type: sections
-    sections:
-      - type: grid
-        cards:
-          - type: heading
-            heading: Nyt afsnit
-          - type: markdown
-            content: |
-              ## EV opladning
-              **Egen bil**
-              1. Sæt mål-SOC i bilen
-              2. Sæt "Klar til tidspunkt" i HA
-              3. Vælg mode
-              4. Tilslut kabel
+  - title: EV opladning
+    path: ev
+    icon: mdi:car-electric
+    type: sections
+    max_columns: 3
 
-              **Gæstebil**
-              1. Vælg "Guest Auto"
-              2. Indtast start-SOC, mål-SOC og batteristørrelse
-              3. Sæt "Klar til tidspunkt"
-              4. Tilslut kabel
+    sections:
+      # ============================================================
+      # DAGLIG BETJENING
+      # ============================================================
       - type: grid
         cards:
           - type: heading
-            heading: Nyt afsnit
+            heading: EV opladning
+            icon: mdi:car-electric
+
           - type: entities
-            title: EV ønsker
+            title: Styring
             show_header_toggle: false
             entities:
               - entity: input_boolean.ev_ha_control_enabled
@@ -32,185 +24,234 @@ views:
               - entity: input_select.ev_charge_mode
                 name: Lade-mode
               - entity: input_datetime.ev_planned_ready_by
-                name: Klar til tidspunkt
-              - type: section
-                label: Gæstebil
-              - entity: input_number.ev_guest_planned_start_soc
-                name: Gæst start-SOC %
-              - entity: input_number.ev_guest_planned_target_soc
-                name: Gæst mål-SOC %
-              - entity: input_number.ev_guest_planned_battery_kwh
-                name: Gæst batteri kWh
+                name: Klar til
+
+          - type: entities
+            title: Status
+            show_header_toggle: false
+            entities:
+              - entity: sensor.ev_operational_status
+                name: Status
+              - entity: sensor.ev_effective_soc
+                name: SOC
+              - entity: sensor.ev_effective_target_soc
+                name: Mål-SOC
+              - entity: sensor.eh45khwp_power
+                name: Ladeeffekt
+              - entity: sensor.ev_target_ampere_effective
+                name: Målstrøm
+              - entity: sensor.ev_charge_decision
+                name: Beslutning
+              - entity: sensor.ev_next_charge_window_real
+                name: Næste ladevindue
+
+      # ============================================================
+      # LADEPLAN
+      # ============================================================
       - type: grid
         cards:
           - type: heading
-            heading: Nyt afsnit
+            heading: Ladeplan
+            icon: mdi:calendar-clock
+
           - type: entities
-            title: EV Testpanel
+            title: Plan
             show_header_toggle: false
             entities:
-              - entity: input_boolean.ev_ha_control_enabled
-                name: HA kontrol
-              - entity: input_select.ev_charge_mode
-                name: Lade-mode
-              - entity: input_boolean.ev_manual_override
-                name: Manuel override
-              - entity: input_boolean.ev_session_active
-                name: Session aktiv
-              - entity: input_boolean.ev_simulation_mode
-                name: 🧪 Simulér kabel
-              - entity: binary_sensor.charging_cable_connected
-                name: Kabel tilsluttet (fysisk)
-              - entity: binary_sensor.ev_cable_connected_effective
-                name: Kabel tilsluttet (effektiv)
-              - entity: input_datetime.ev_planned_ready_by
-                name: Planlagt klar kl.
-              - entity: input_datetime.ev_session_ready_by
-                name: Session klar kl.
-              - entity: sensor.battery_level
-                name: Bil batteri %
-              - entity: sensor.battery_target_charge_level
-                name: Bil mål-SOC %
-              - entity: sensor.eh45khwp_power
-                name: Ladeeffekt
-              - entity: switch.eh45khwp_charger_enabled
-                name: Lader enabled
-              - entity: switch.reduced_ac_charging
-                name: Reduced AC
-              - entity: sensor.electricity_price_now_real
-                name: Pris nu
-              - entity: sensor.grid_export_power
-                name: Eksport til net
-              - entity: sensor.grid_export_power_average_2m_safe
-                name: Eksport til net (midlet)
-              - entity: sensor.ev_virtual_day_price_real
-                name: Virtuel pris nu
-              - entity: sensor.ev_night_reference_price_real
-                name: Referencepris
-              - entity: sensor.ev_price_delta_real
-                name: Pris-delta
               - entity: sensor.ev_remaining_energy_kwh
-                name: Resterende kWh
+                name: Resterende energi
               - entity: sensor.ev_remaining_hours_needed
-                name: Resterende timer
+                name: Ladetid nødvendig
               - entity: sensor.ev_hours_until_ready
                 name: Timer til deadline
               - entity: binary_sensor.ev_deadline_risk
                 name: Deadline-risiko
-              - entity: binary_sensor.ev_session_complete
-                name: Session færdig
-              - entity: sensor.ev_charge_decision
-                name: Charge decision
-              - entity: sensor.ev_charge_reason
-                name: Charge reason
-              - entity: sensor.ev_charge_power_mode
-                name: Charge power mode
               - entity: sensor.ev_cheapest_hours_clock_real
                 name: Valgte ladetimer
+              - entity: sensor.ev_next_charge_window_real
+                name: Næste ladevindue
+
+      # ============================================================
+      # PRIS
+      # ============================================================
+      - type: grid
+        cards:
+          - type: heading
+            heading: Elpris
+            icon: mdi:currency-usd
+
+          - type: entities
+            title: Pris
+            show_header_toggle: false
+            entities:
+              - entity: sensor.electricity_price_now_real
+                name: Pris nu
+              - entity: sensor.ev_virtual_day_price_real
+                name: Virtuel ladepris
+              - entity: sensor.ev_night_reference_price_real
+                name: Referencepris
+              - entity: sensor.ev_price_delta_real
+                name: Pris-delta
+              - entity: sensor.ev_cheapest_hour_price_real
+                name: Laveste planpris
+
+          - type: custom:apexcharts-card
+            header:
+              show: true
+              title: Strømligning – timepriser
+            graph_span: 48h
+            span:
+              start: day
+            now:
+              show: true
+              label: Nu
+            apex_config:
+              chart:
+                height: 280
+                type: bar
+              xaxis:
+                type: datetime
+              plotOptions:
+                bar:
+                  columnWidth: 85%
+              dataLabels:
+                enabled: false
+              yaxis:
+                decimalsInFloat: 3
+            series:
+              - entity: sensor.stromligning_current_price_vat
+                name: Pris
+                type: column
+                unit: DKK/kWh
+                float_precision: 3
+                data_generator: >
+                  const prices = entity.attributes.prices || [];
+                  return prices.map(p => [
+                    new Date(p.start).getTime(),
+                    Number(p.price)
+                  ]);
+
+      # ============================================================
+      # GÆSTEBIL - KUN VED MONTA GUEST
+      # ============================================================
+      - type: grid
+        visibility:
+          - condition: state
+            entity: input_select.ev_charge_mode
+            state: "Monta Guest"
+        cards:
+          - type: heading
+            heading: Gæstebil
+            icon: mdi:car-multiple
+
+          - type: entities
+            title: Gæstebil
+            show_header_toggle: false
+            entities:
+              - entity: input_number.ev_guest_planned_start_soc
+                name: Start-SOC
+              - entity: input_number.ev_guest_planned_target_soc
+                name: Mål-SOC
+              - entity: input_number.ev_guest_planned_battery_kwh
+                name: Batteri
+
+      # ============================================================
+      # DIAGNOSTIK
+      # ============================================================
+      - type: grid
+        cards:
+          - type: heading
+            heading: Diagnostik
+            icon: mdi:tools
+
+          - type: entities
+            title: Session / Easee
+            show_header_toggle: false
+            entities:
+              - entity: input_boolean.ev_session_active
+                name: Session aktiv
+              - entity: binary_sensor.ev_cable_connected_effective
+                name: Kabel tilsluttet
+              - entity: binary_sensor.ev_session_complete
+                name: Session færdig
+              - entity: input_datetime.ev_session_ready_by
+                name: Session klar kl.
+              - entity: switch.eh45khwp_charger_enabled
+                name: Easee enabled
+              - entity: sensor.eh45khwp_status
+                name: Easee status
+              - entity: sensor.eh45khwp_power
+                name: Easee effekt
+
+          - type: entities
+            title: Ampere
+            show_header_toggle: false
+            entities:
+              - entity: sensor.ev_target_ampere_raw
+                name: Raw
+              - entity: sensor.ev_target_ampere_stable
+                name: Stable
+              - entity: sensor.ev_target_ampere_effective
+                name: Effective
+              - entity: input_number.ev_last_sent_ampere
+                name: Sidst sendt til Easee
+              - entity: sensor.eh45khwp_dynamic_charger_limit
+                name: Easee dynamisk grænse
+
+          - type: entities
+            title: Bil / SOC
+            show_header_toggle: false
+            entities:
+              - entity: sensor.garage_vw_id_4_pro_battery_level
+                name: VW SOC rå
+              - entity: input_number.ev_car_soc
+                name: Bil SOC accepteret
+              - entity: sensor.ev_calculated_soc
+                name: Beregnet SOC
+              - entity: input_number.ev_soc_correction
+                name: SOC korrektion
+              - entity: sensor.ev_effective_soc
+                name: Effektiv SOC
+              - entity: sensor.garage_vw_id_4_pro_charge_target
+                name: VW mål-SOC rå
+              - entity: sensor.ev_effective_target_soc
+                name: Effektiv mål-SOC
+              - entity: binary_sensor.garage_vw_id_4_pro_data_stale
+                name: VW data forældede
+              - entity: sensor.garage_vw_id_4_pro_last_snapshot_received
+                name: Seneste VW snapshot
+
+          - type: entities
+            title: Ladeplan – detaljer
+            show_header_toggle: false
+            entities:
               - entity: sensor.ev_selected_slots_real
                 name: Valgte deltimer
               - entity: sensor.ev_charge_windows_real
-                name: Ladevindue(r)     
-              - entity: sensor.ev_next_charge_window_real 
-                name: Kommende ladevindue                
+                name: Ladevinduer
               - entity: sensor.ev_plan_preview_real
                 name: Planlagte ladetimer
               - entity: sensor.ev_remaining_minutes_needed
                 name: Resterende minutter
-      - type: grid
-        cards:
-          - type: heading
-            heading: Nyt afsnit
-          - type: vertical-stack
-            cards:
-              - type: markdown
-                content: |
-                  ## ⚡ Real Pricing (Strømligning)
-              - type: entities
-                title: Pris – Real
-                show_header_toggle: false
-                entities:
-                  - entity: sensor.electricity_price_now_real
-                    name: Pris nu (real)
-                  - entity: sensor.ev_virtual_day_price_real
-                    name: Virtuel dagpris (real)
-                  - entity: sensor.ev_night_reference_price_real
-                    name: Reference (real)
-                  - entity: sensor.ev_price_delta_real
-                    name: Δ (real)
-              - type: entities
-                title: Plan – Real
-                show_header_toggle: false
-                entities:
-                  - entity: sensor.ev_cheapest_hour_price_real
-                    name: Laveste pris
-                  - entity: sensor.ev_cheapest_hours_clock_real
-                    name: Valgte timer
-                  - entity: sensor.ev_selected_slots_real
-                    name: Valgte deltimer  
-                  - entity: sensor.ev_plan_preview_real
-                    name: Planlagt start
-              - type: entities
-                title: Debug – Real
-                show_header_toggle: false
-                entities:
-                  - entity: sensor.ev_price_window_raw_real
-                    name: Antal datapunkter
-          - type: vertical-stack
-            cards:
-              - type: entities
-                title: Model – Real
-                show_header_toggle: false
-                entities:
-                  - entity: sensor.electricity_price_now_real
-                    name: Pris nu
-                  - entity: sensor.ev_virtual_day_price_real
-                    name: Virtuel dagpris
-                  - entity: sensor.ev_night_reference_price_real
-                    name: Referencepris
-                  - entity: sensor.ev_price_delta_real
-                    name: Delta
-              - type: custom:apexcharts-card
-                header:
-                  show: true
-                  title: Strømligning – timepriser i modellen
-                graph_span: 48h
-                span:
-                  start: day
-                now:
-                  show: true
-                  label: Nu
-                apex_config:
-                  chart:
-                    height: 280
-                    type: bar
-                  xaxis:
-                    type: datetime
-                  plotOptions:
-                    bar:
-                      columnWidth: 85%
-                  dataLabels:
-                    enabled: false
-                  yaxis:
-                    decimalsInFloat: 3
-                series:
-                  - entity: sensor.stromligning_current_price_vat
-                    name: I dag
-                    type: column
-                    unit: DKK/kWh
-                    float_precision: 3
-                    data_generator: >
-                      const prices = entity.attributes.prices || [];
+              - entity: sensor.ev_price_window_raw_real
+                name: Prisdatapunkter
 
-                      return prices.map(p => [new Date(p.start).getTime(),
-                      Number(p.price)]);
-                  - entity: binary_sensor.stromligning_tomorrow_available_vat
-                    name: I morgen
-                    type: column
-                    unit: DKK/kWh
-                    float_precision: 3
-                    data_generator: >
-                      const prices = entity.attributes.prices || [];
+          - type: entities
+            title: Net / sol
+            show_header_toggle: false
+            entities:
+              - entity: sensor.grid_export_power
+                name: Eksport til net
+              - entity: sensor.grid_export_power_average_2m_safe
+                name: Eksport 2 min.
+              - entity: sensor.ev_virtual_day_price_real
+                name: Virtuel ladepris
 
-                      return prices.map(p => [new Date(p.start).getTime(),
-                      Number(p.price)]);
+          - type: entities
+            title: Test
+            show_header_toggle: false
+            entities:
+              - entity: input_boolean.ev_manual_override
+                name: Manuel override
+              - entity: input_boolean.ev_simulation_mode
+                name: Simulér kabel
