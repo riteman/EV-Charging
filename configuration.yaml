@@ -38,6 +38,7 @@ input_select:
     name: EV Car SOC Source
     options:
       - Unknown
+      - ABRP
       - VW
       - Manual
     initial: Unknown
@@ -367,7 +368,30 @@ binary_sensor:
   - platform: tuya_presence_raw
 
 template:
-    - sensor:   
+  - sensor:   
+      - name: "EV ABRP SOC"
+        unique_id: ev_abrp_soc
+        unit_of_measurement: "%"
+        state: >
+          {{ states('sensor.volkswagen_id_4_2022_2023_pro_rwd_77_kwh_heatpump_state_of_charge') }}
+      - name: "EV ABRP Odometer"
+        unique_id: ev_abrp_odometer
+        unit_of_measurement: "km"
+        state: >
+          {{ states('sensor.volkswagen_id_4_2022_2023_pro_rwd_77_kwh_heatpump_odometer') }}
+
+      - name: "EV ABRP Last Update"
+        unique_id: ev_abrp_last_update
+        device_class: timestamp
+        state: >
+          {% set value = states('sensor.volkswagen_id_4_2022_2023_pro_rwd_77_kwh_heatpump_last_update') %}
+          {% if value not in ['unknown', 'unavailable', 'none', ''] %}
+            {{ value }}
+          {% else %}
+            {{ none }}
+          {% endif %}
+
+      
       - name: "PV inverter driftstatus"
         unique_id: pv_inverter_driftstatus
         state: >
@@ -475,32 +499,29 @@ template:
           effective_target_soc: "{{ states('sensor.ev_effective_target_soc') }}"
           source: "effective_soc_minus_effective_target"
 
-      - name: "EV Remaining Hours Needed"
-        unique_id: ev_remaining_hours_needed
+     
+     
+      - name: "EV Estimated Remaining Charge Time"
+        unique_id: ev_estimated_remaining_charge_time
         unit_of_measurement: "h"
         state: >
           {% set remaining = states('sensor.ev_remaining_energy_live_kwh') | float(0) %}
-          {% set power = states('input_number.ev_charge_power_kw') | float(11) %}
-          {% set efficiency = 0.92 %}
+          {% set power = states('sensor.eh45khwp_power') | float(0) %}
 
-          {% if power > 0 %}
-            {{ (remaining / (power * efficiency)) | round(2) }}
+          {% if remaining <= 0 %}
+            0
+          {% elif power > 0.5 %}
+            {{ (remaining / power) | round(2) }}
           {% else %}
             0
           {% endif %}
 
         attributes:
-          model: "MODEL B"
-          mode: >
-            {{ states('input_select.ev_charge_mode') }}
-
           remaining_live_kwh: >
             {{ states('sensor.ev_remaining_energy_live_kwh') | float(0) | round(2) }}
 
-          charge_power_kw: >
-            {{ states('input_number.ev_charge_power_kw') | float(11) | round(2) }}
-
-          efficiency: 0.92
+          actual_charge_power_kw: >
+            {{ states('sensor.eh45khwp_power') | float(0) | round(2) }}
 
           display_hhmm: >
             {% set hours = this.state | float(0) %}
@@ -532,7 +553,7 @@ template:
           {% set soc = states('sensor.ev_effective_soc') | float(0) %}
           {% set battery_kwh = states('input_number.ev_session_battery_kwh')
              | float(states('input_number.ev_guest_planned_battery_kwh') | float(77)) %}
-          {% set charge_efficiency = 0.90 %}
+          {% set charge_efficiency = 0.92 %}
 
           {% set battery_kwh_missing =
              battery_kwh * ([target_soc - soc, 0] | max) / 100 %}
@@ -546,7 +567,7 @@ template:
           battery_kwh: >
             {{ states('input_number.ev_session_battery_kwh')
                | float(states('input_number.ev_guest_planned_battery_kwh') | float(77)) }}
-          charge_efficiency: 0.90
+          charge_efficiency: 0.92
           source: "effective_target_minus_effective_soc_with_efficiency"
 
       - name: "EV Night Reference Price Real"
@@ -1990,7 +2011,8 @@ template:
           charger_enabled: "{{ states('switch.eh45khwp_charger_enabled') }}"
           no_current_reason: "{{ states('sensor.eh45khwp_reason_for_no_current') }}"
           start_delay_active: "{{ states('input_boolean.ev_start_delay_active') }}"
-    - sensor:
+
+  - sensor:
       - name: "EV Night Reference Selected"
         unique_id: ev_night_reference_selected
         state: >
@@ -2457,7 +2479,21 @@ template:
         
  # -----------------------------------------------------------------------------
 
-    - binary_sensor:
+  - binary_sensor:
+      - name: "EV ABRP SOC Fresh"
+        unique_id: ev_abrp_soc_fresh
+        device_class: connectivity
+        state: >
+          {% set soc = states('sensor.ev_abrp_soc') %}
+          {% set updated = states('sensor.ev_abrp_last_update') %}
+          {% if soc in ['unknown', 'unavailable', 'none', '']
+                or updated in ['unknown', 'unavailable', 'none', ''] %}
+            false
+          {% else %}
+            {% set age = (as_timestamp(now()) - as_timestamp(updated)) / 60 %}
+            {{ 0 <= age <= 60 }}
+          {% endif %}
+      
       - name: "EV Deadline Risk"
         unique_id: ev_deadline_risk
         state: >
